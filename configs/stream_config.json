@@ -1,0 +1,60 @@
+{
+	"stream_width": 1920,
+    "stream_height": 1080,
+    "stream_fps": 60,
+    "nodes":
+    [
+        {
+            "name": "nodeone",
+            "host": "128.0.0.1",
+            "port": 9000,
+            "streams":
+            [
+                {
+                    "name": "cam1",
+                    "stream_index": 0,
+                    "R": [],
+                    "K": [],
+                    "dbc": []
+                },
+                {
+                    "name": "cam2",
+                    "stream_index": 1,
+                    "R": [],
+                    "K": [],
+                    "dbc": []
+                },
+                {
+                    "name": "cam3",
+                    "stream_index": 2,
+                    "R": [],
+                    "K": [],
+                    "dbc": []
+                }
+            ]
+        },
+        {
+            "name": "nodetwo",
+            "host": "128    .0.0.2",
+            "port": 9001,
+            "streams":
+            [
+                {
+                    "name": "cam1",
+                    "stream_index": 0,
+                    "R": [],
+                    "K": [],
+                    "dbc": []
+                },
+                {
+                    "name": "cam2",
+                    "stream_index": 1,
+                    "R": [],
+                    "K": [],
+                    "dbc": []
+                }
+            ]
+        }
+    ]
+
+}

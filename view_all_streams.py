@@ -69,12 +69,15 @@ class StreamCapture:
 
     def _open_and_loop(self, timeout: float, retry_interval: float):
         gst = (
-            f'udpsrc port={self.port} buffer-size=2097152 '
-            f'caps="application/x-rtp, media=video, encoding-name=H264, payload=96" '
-            f'! rtpjitterbuffer latency=0 drop-on-latency=true '
-            f'! rtph264depay ! h264parse ! avdec_h264 max-threads=2 '
-            f'! videoconvert n-threads=2 '
-            f'! appsink sync=false max-buffers=1 drop=true'
+            f'udpsrc port={self.port} buffer-size=60000000 '
+            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96" ! '
+            f'rtpjitterbuffer latency=150 drop-on-latency=true ! '
+            f'rtph264depay ! h264parse ! '
+            f'nvh264dec ! '
+            f'cudaconvert ! '
+            f'cudadownload ! '
+            f'videoconvert ! video/x-raw,format=BGR ! ' 
+            f'appsink sync=false max-buffers=1 drop=true'
         )
         deadline = time.monotonic() + timeout
         attempt = 0
@@ -101,7 +104,8 @@ class StreamCapture:
             if ret and frame is not None:
                 with self._lock:
                     self.frame = frame
-            # no sleep – grab as fast as the pipeline delivers
+            else:
+                time.sleep(0.005)
 
     def read(self):
         with self._lock:
@@ -213,7 +217,7 @@ def main():
                     sc = grid[r][c]
                     frame = sc.read() if sc else None
                     if frame is not None:
-                        cell = cv2.resize(frame, (cell_w, cell_h), interpolation=cv2.INTER_LINEAR)
+                        cell = cv2.resize(frame, (cell_w, cell_h), interpolation=cv2.INTER_AREA)
                     else:
                         cell = black_cell.copy()
                         if sc is not None:
@@ -236,7 +240,7 @@ def main():
 
             cv2.imshow(win_name, canvas)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(30) & 0xFF
             if key == ord('q'):
                 break
             elif key == ord('t'):

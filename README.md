@@ -89,3 +89,14 @@ wakeonlan -i 10.0.0.255 3c:6d:66:02:42:22
 wakeonlan -i 10.0.0.255 48:b0:2d:ec:6b:62
 wakeonlan -i 10.0.0.255 48:b0:2d:ec:78:46
 wakeonlan -i <broadcast-address> <mac-address>
+
+
+## display the video address
+ for i in {0..6}; do echo -n "video$i: "; udevadm info -a -n /dev/video$i | grep 'ATTR{name}' | head -n 1; done
+video0:     ATTR{name}=="vi-output, ecam_gmsl 9-0043"
+video1:     ATTR{name}=="vi-output, ecam_gmsl 9-0044"
+video2:     ATTR{name}=="vi-output, ecam_gmsl 10-0043"
+video3:     ATTR{name}=="vi-output, ecam_gmsl 10-0044"
+video4:     ATTR{name}=="vi-output, ecam_gmsl 11-0043"
+video5:     ATTR{name}=="vi-output, ecam_gmsl 11-0044"
+video6: Unknown device "/dev/video6": No such file or directory

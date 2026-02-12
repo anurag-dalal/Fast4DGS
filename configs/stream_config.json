@@ -8,83 +8,26 @@
             "name": "nodeone",
             "host": "10.0.0.1",
             "ports": [5000, 5001, 5002, 5003, 5004, 5005],
-            "streams":
-            [
-                {
-                    "name": "cam1",
-                    "stream_index": 0,
-                    "R": [],
-                    "K": [],
-                    "dbc": []
-                },
-                {
-                    "name": "cam2",
-                    "stream_index": 1,
-                    "R": [],
-                    "K": [],
-                    "dbc": []
-                },
-                {
-                    "name": "cam3",
-                    "stream_index": 2,
-                    "R": [],
-                    "K": [],
-                    "dbc": []
-                }
-            ]
+            "MAC": "48:b0:2d:ec:69:32"
         },
         {
             "name": "nodetwo",
             "host": "10.0.0.2",
             "ports": [6000, 6001, 6002, 6003, 6004, 6005],
-            "streams":
-            [
-                {
-                    "name": "cam1",
-                    "stream_index": 0,
-                    "R": [],
-                    "K": [],
-                    "dbc": []
-                },
-                {
-                    "name": "cam2",
-                    "stream_index": 1,
-                    "R": [],
-                    "K": [],
-                    "dbc": []
-                }
-            ]
+            "MAC": "3c:6d:66:02:42:22"
         },
         {
             "name": "nodethree",
             "host": "10.0.0.3",
             "ports": [7000, 7001, 7002, 7003, 7004, 7005],
-            "streams":
-            [
-                {
-                    "name": "cam1",
-                    "stream_index": 0,
-                    "R": [],
-                    "K": [],
-                    "dbc": []
-                }
-            ]
+            "MAC": "48:b0:2d:ec:6b:62"
         },
-            {
-                "name": "nodefour",
-                "host": "10.0.0.4",
-                "ports": [8000, 8001, 8002, 8003, 8004, 8005],
-                "streams":
-                [
-                    {
-                        "name": "cam1",
-                        "stream_index": 0,
-                        "R": [],
-                        "K": [],
-                        "dbc": []
-                    }
-                ]
-            }
+        {
+            "name": "nodefour",
+            "host": "10.0.0.4",
+            "ports": [8000, 8001, 8002, 8003, 8004, 8005],
+            "MAC": "48:b0:2d:ec:78:46"
+        }
     ]
 
 }

@@ -20,6 +20,7 @@ Run: python3 image_saver_gui.py
 import threading
 import time
 import os
+import json
 import cv2
 from pathlib import Path
 import tkinter as tk
@@ -32,9 +33,20 @@ class StreamSaverApp:
         self.root = root
         self.root.title("UDP H264 Stream Viewer & Saver")
 
-        self.port_var = tk.StringVar(value="5000")
+        # load config nodes (if available)
+        self.config_path = Path(__file__).resolve().parent / "configs" / "stream_config.json"
+        self.nodes = self._load_nodes_from_config()
+
+        # UI variables
+        default_port = "5000"
+        if self.nodes:
+            default_port = str(self.nodes[0].get("ports", [5000])[0])
+
+        self.port_var = tk.StringVar(value=default_port)
+        self.node_var = tk.StringVar(value=self.nodes[0]["name"] if self.nodes else "")
         self.save_var = tk.BooleanVar(value=True)
-        self.base_folder = Path.cwd()
+        # default save location per user request
+        self.base_folder = Path("/home/anurag/Codes/Fast4DGS/dataset")
 
         self.latest_frame = None
 
@@ -47,24 +59,74 @@ class StreamSaverApp:
         self.save_index = 1
 
     def _build_ui(self):
-        frm = tk.Frame(self.root)
-        frm.pack(padx=8, pady=8)
+        self.root.minsize(720, 480)
 
-        tk.Label(frm, text="Port:").grid(row=0, column=0, sticky="w")
-        tk.Entry(frm, textvariable=self.port_var, width=8).grid(row=0, column=1, sticky="w")
-        tk.Button(frm, text="Start Stream", command=self.start_stream).grid(row=0, column=2, padx=6)
-        tk.Button(frm, text="Stop Stream", command=self.stop_stream).grid(row=0, column=3)
+        # ── controls frame ──
+        frm = tk.Frame(self.root, padx=12, pady=8)
+        frm.pack(fill="x")
+        frm.columnconfigure(1, weight=1)
+        frm.columnconfigure(3, weight=1)
 
-        tk.Button(frm, text="Select Folder", command=self.select_folder).grid(row=1, column=0, pady=6)
-        self.folder_label = tk.Label(frm, text=str(self.base_folder), anchor="w")
-        self.folder_label.grid(row=1, column=1, columnspan=3, sticky="w")
+        lbl_font = ("Helvetica", 10)
+        val_font = ("Helvetica", 10, "bold")
 
-        # Button to save only the currently displayed frame
-        self.save_button = tk.Button(frm, text="Save Frame", command=self.save_current_frame, state="disabled")
-        self.save_button.grid(row=2, column=0, sticky="w")
+        # Row 0 – Node selector + Port selector
+        tk.Label(frm, text="Node:", font=lbl_font).grid(row=0, column=0, sticky="w", padx=(0, 4))
+        if self.nodes:
+            node_names = [n.get("name", "") for n in self.nodes]
+            self.node_menu = tk.OptionMenu(frm, self.node_var, *node_names, command=self._on_node_change)
+            self.node_menu.config(width=14, font=lbl_font)
+            self.node_menu.grid(row=0, column=1, sticky="w", padx=(0, 12))
+        else:
+            tk.Label(frm, text="(no config)", font=lbl_font).grid(row=0, column=1, sticky="w")
 
-        self.video_label = tk.Label(self.root)
-        self.video_label.pack(padx=6, pady=6)
+        tk.Label(frm, text="Port:", font=lbl_font).grid(row=0, column=2, sticky="w", padx=(0, 4))
+        if self.nodes:
+            self.ports_menu = tk.OptionMenu(frm, self.port_var, "")
+            self.ports_menu.config(width=8, font=lbl_font)
+            self.ports_menu.grid(row=0, column=3, sticky="w")
+        else:
+            tk.Entry(frm, textvariable=self.port_var, width=10, font=lbl_font).grid(row=0, column=3, sticky="w")
+
+        # Row 1 – Host (readonly)
+        tk.Label(frm, text="Host:", font=lbl_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.host_label = tk.Label(frm, text="—", anchor="w", font=val_font)
+        self.host_label.grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+        # MAC (readonly)
+        tk.Label(frm, text="MAC:", font=lbl_font).grid(row=1, column=2, sticky="w", pady=(4, 0))
+        self.mac_label = tk.Label(frm, text="—", anchor="w", font=val_font)
+        self.mac_label.grid(row=1, column=3, sticky="w", pady=(4, 0))
+
+        # ── button bar ──
+        btn_frm = tk.Frame(self.root, padx=12, pady=6)
+        btn_frm.pack(fill="x")
+
+        tk.Button(btn_frm, text="▶  Start Stream", width=16, command=self.start_stream, font=lbl_font,
+                  bg="#4CAF50", fg="white", activebackground="#45a049").pack(side="left", padx=(0, 6))
+        tk.Button(btn_frm, text="■  Stop Stream", width=16, command=self.stop_stream, font=lbl_font,
+                  bg="#f44336", fg="white", activebackground="#d32f2f").pack(side="left", padx=(0, 6))
+        self.save_button = tk.Button(btn_frm, text="💾  Save Frame", width=16,
+                                     command=self.save_current_frame, state="disabled", font=lbl_font)
+        self.save_button.pack(side="left", padx=(0, 6))
+        tk.Button(btn_frm, text="📁  Select Folder", width=16, command=self.select_folder,
+                  font=lbl_font).pack(side="left")
+
+        # ── folder path display ──
+        path_frm = tk.Frame(self.root, padx=12)
+        path_frm.pack(fill="x")
+        tk.Label(path_frm, text="Save to:", font=lbl_font).pack(side="left")
+        self.folder_label = tk.Label(path_frm, text=str(self.base_folder), anchor="w",
+                                     font=("Courier", 9), fg="#555")
+        self.folder_label.pack(side="left", padx=4)
+
+        # ── video display ──
+        self.video_label = tk.Label(self.root, bg="#222")
+        self.video_label.pack(padx=10, pady=10, fill="both", expand=True)
+
+        # populate initial node info (ports, host, mac)
+        if self.nodes:
+            self._on_node_change()
 
     def select_folder(self):
         folder = filedialog.askdirectory(initialdir=str(self.base_folder))
@@ -72,9 +134,49 @@ class StreamSaverApp:
             self.base_folder = Path(folder)
             self.folder_label.config(text=str(self.base_folder))
 
-    def start_stream(self):
-        if self.running:
+    def _load_nodes_from_config(self):
+        try:
+            if not self.config_path.exists():
+                return []
+            with open(self.config_path, "r") as f:
+                cfg = json.load(f)
+            nodes = cfg.get("nodes", [])
+            # normalize entries: ensure keys name, host, ports, MAC exist
+            normalized = []
+            for n in nodes:
+                normalized.append({
+                    "name": n.get("name", ""),
+                    "host": n.get("host", ""),
+                    "ports": n.get("ports", []),
+                    "MAC": n.get("MAC", n.get("mac", "")),
+                })
+            return normalized
+        except Exception:
+            return []
+
+    def _on_node_change(self, _=None):
+        # update ports menu and host/mac labels based on selected node
+        name = self.node_var.get()
+        node = next((n for n in self.nodes if n.get("name") == name), None)
+        if not node:
             return
+        # update host/mac
+        self.host_label.config(text=node.get("host", ""))
+        self.mac_label.config(text=node.get("MAC", ""))
+        # update ports dropdown
+        ports = [str(p) for p in node.get("ports", [])]
+        if ports:
+            menu = self.ports_menu["menu"]
+            menu.delete(0, "end")
+            for p in ports:
+                menu.add_command(label=p, command=lambda v=p: self.port_var.set(v))
+            # set default port
+            self.port_var.set(ports[0])
+
+    def start_stream(self):
+        # if a stream is already running, stop it first so we can switch
+        if self.running:
+            self.stop_stream()
         try:
             port = int(self.port_var.get())
         except ValueError:

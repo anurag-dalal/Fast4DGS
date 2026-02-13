@@ -69,16 +69,15 @@ class StreamCapture:
 
     def _open_and_loop(self, timeout: float, retry_interval: float):
         gst = (
-            f'udpsrc port={self.port} buffer-size=100000000 ' 
-            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96" ! '
-            f'rtpjitterbuffer latency=50 drop-on-latency=true ! '
-            f'rtph264depay ! h264parse config-interval=1 ! '
-            f'nvh264dec disable-dpb=true ! '
-            # f'cudaconvert ! '
-            # f'cudadownload ! '
-            f'videoconvert ! video/x-raw,format=BGR ! ' 
+            f'udpsrc port={self.port} buffer-size=200000000 '
+            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H265, payload=96" ! '
+            f'rtpjitterbuffer latency=15 drop-on-latency=true ! '
+            f'rtph265depay ! h265parse config-interval=1 ! '
+            f'nvh265dec enable-max-performance=1 ! '          
+            f'videoconvert ! video/x-raw,format=BGR ! '
             f'appsink sync=false max-buffers=1 drop=true'
         )
+
         deadline = time.monotonic() + timeout
         attempt = 0
         while self._running and time.monotonic() < deadline:
@@ -240,7 +239,7 @@ def main():
 
             cv2.imshow(win_name, canvas)
 
-            key = cv2.waitKey(30) & 0xFF
+            key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
             elif key == ord('t'):

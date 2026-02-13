@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
 """
-View all H264 UDP RTP streams in a single window.
+MAXIMUM PERFORMANCE VERSION - Pre-scaled frames, parallel processing, performance monitoring
 
-Reads nodes/ports from configs/stream_config.json and opens a GStreamer
-capture for every stream.  Frames are grabbed in parallel threads and
-composited into a 6-column × 4-row (ports × nodes) grid with OpenCV.
-
-Controls:
-    t  – toggle overlay text (node name / port / MAC)
-    +  – decrease downscale factor (zoom in)
-    -  – increase downscale factor (zoom out)
-    q  – quit
-
-Usage:
-    python3 view_all_streams.py              # default downscale=4
-    python3 view_all_streams.py --scale 2    # less downscale (bigger)
-    python3 view_all_streams.py --scale 8    # more downscale (smaller)
+Key improvements:
+- Frames are resized in capture threads (parallel, not in main loop)
+- Minimal locking in display loop
+- Performance monitoring to identify bottlenecks
+- Optimized numpy operations
 """
 
 import argparse
@@ -23,13 +14,10 @@ import json
 import threading
 import time
 from pathlib import Path
+from collections import deque
 
 import cv2
 import numpy as np
-
-
-# ── config ──────────────────────────────────────────────────────────────────
-
 CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "stream_config.json"
 
 
@@ -38,407 +26,31 @@ def load_config(path: Path) -> dict:
         return json.load(f)
 
 
-# ── per-stream capture thread ──────────────────────────────────────────────
-
 class StreamCapture:
-    """Grabs frames from one GStreamer UDP/RTP H264 stream in a background thread."""
+    """Captures and PRE-SCALES frames in background thread."""
 
-    def __init__(self, port: int, node_name: str, host: str, mac: str):
+    def __init__(self, port: int, node_name: str, host: str, mac: str, 
+                 target_width: int, target_height: int):
         self.port = port
         self.node_name = node_name
         self.host = host
         self.mac = mac
+        self.target_width = target_width
+        self.target_height = target_height
 
-        self.frame = None          # latest BGR frame (or None)
-        self._seq = 0              # increments on each successfully decoded frame
+        # Store PRE-SCALED frame (no resize in main loop!)
+        self.scaled_frame = None
         self._lock = threading.Lock()
         self._running = False
         self._cap = None
         self._thread = None
+        
+        # Performance monitoring
+        self.frame_count = 0
+        self.last_fps_check = time.time()
+        self.current_fps = 0.0
 
     def start(self, timeout: float = 15.0, retry_interval: float = 3.0):
-        """Try to open the GStreamer capture with retries up to *timeout* seconds.
-
-        If it still can't open after the deadline, mark the stream as failed
-        (frame stays None → shown as black cell).
-        """
-        self._running = True
-        self._thread = threading.Thread(target=self._open_and_loop,
-                                        args=(timeout, retry_interval),
-                                        daemon=True)
-        self._thread.start()
-
-    def _open_and_loop(self, timeout: float, retry_interval: float):
-        # Prefer hardware decoders when available; fall back to software.
-        decoder_candidates = [
-            ("nvv4l2decoder", "nvv4l2decoder enable-max-performance=1"),
-            ("nvh264dec", "nvh264dec"),
-            ("vaapih264dec", "vaapih264dec"),
-            ("v4l2h264dec", "v4l2h264dec"),
-            ("avdec_h264", "avdec_h264 low-latency=true"),
-        ]
-
-        def build_pipeline(decoder: str) -> str:
-            # Notes:
-            # - udpsrc buffer-size: larger socket buffer reduces packet loss under load.
-            # - rtpjitterbuffer latency: small value improves smoothness without large lag.
-            # - queue leaky=downstream: prefer newest frames over blocking.
-            return (
-                f'udpsrc port={self.port} buffer-size=4194304 '
-                f'caps="application/x-rtp, media=video, encoding-name=H264, payload=96" ! '
-                f'rtpjitterbuffer latency=5 drop-on-latency=true ! '
-                f'rtph264depay ! h264parse ! '
-                f'queue max-size-buffers=3 leaky=downstream ! '
-                f'{decoder} ! '
-                f'videoconvert ! '
-                f'queue max-size-buffers=2 leaky=downstream ! '
-                f'appsink sync=false max-buffers=2 drop=true'
-            )
-
-        def try_open_once() -> tuple[cv2.VideoCapture | None, str | None]:
-            for decoder_name, decoder_elem in decoder_candidates:
-                gst = build_pipeline(decoder_elem)
-                cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
-                if cap.isOpened():
-                    try:
-                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    except Exception:
-                        pass
-                    return cap, decoder_name
-                cap.release()
-            return None, None
-
-        opened_once = False
-        deadline = time.monotonic() + timeout
-        attempt = 0
-
-        while self._running:
-            attempt += 1
-
-            if not opened_once and time.monotonic() >= deadline:
-                print(f"[FAIL] port {self.port} ({self.node_name}) – gave up after {timeout:.0f}s")
-                return
-
-            cap, decoder_used = try_open_once()
-            if cap is None:
-                if not opened_once:
-                    remaining = deadline - time.monotonic()
-                    if remaining > 0:
-                        print(
-                            f"[RETRY] port {self.port} ({self.node_name}) attempt {attempt} failed, "
-                            f"{remaining:.1f}s left"
-                        )
-                        time.sleep(min(retry_interval, remaining))
-                else:
-                    print(f"[RETRY] port {self.port} ({self.node_name}) reopen attempt {attempt} failed")
-                    time.sleep(retry_interval)
-                continue
-
-            opened_once = True
-            self._cap = cap
-            print(
-                f"[OK]   port {self.port} ({self.node_name}) opened on attempt {attempt} "
-                f"(decoder={decoder_used})"
-            )
-
-            # Blocks until stop() is called or stream stalls.
-            self._loop()
-
-            # Loop exited unexpectedly; release and retry.
-            try:
-                cap.release()
-            except Exception:
-                pass
-            self._cap = None
-            if self._running:
-                time.sleep(retry_interval)
-
-    def _loop(self):
-        last_ok = time.monotonic()
-        consecutive_fail = 0
-        while self._running and self._cap and self._cap.isOpened():
-            ret, frame = self._cap.read()
-            if ret and frame is not None:
-                with self._lock:
-                    self.frame = frame
-                    self._seq += 1
-                last_ok = time.monotonic()
-                consecutive_fail = 0
-            else:
-                consecutive_fail += 1
-                # If the stream stalls for a while, break so we can reopen.
-                if consecutive_fail >= 200 and (time.monotonic() - last_ok) > 2.0:
-                    break
-                time.sleep(0.002)
-
-    def read(self):
-        with self._lock:
-            return self.frame, self._seq
-
-    def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=1.0)
-        if self._cap:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
-            self._cap = None
-
-
-# ── text overlay ────────────────────────────────────────────────────────────
-
-def draw_overlay(img, text_lines, scale_factor):
-    """Draw semi-transparent text lines at top-left of *img* (mutates in place)."""
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = max(0.35, 0.6 / (scale_factor ** 0.3))
-    thickness = 1
-    line_h = int(20 / (scale_factor ** 0.3))
-    pad = 4
-
-    # compute background rectangle
-    max_w = 0
-    for line in text_lines:
-        (w, _), _ = cv2.getTextSize(line, font, font_scale, thickness)
-        max_w = max(max_w, w)
-    bg_h = line_h * len(text_lines) + pad * 2
-    bg_w = max_w + pad * 2
-
-    # draw translucent black box
-    overlay = img.copy()
-    cv2.rectangle(overlay, (0, 0), (bg_w, bg_h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
-
-    # draw text
-    y = pad + line_h - 4
-    for line in text_lines:
-        cv2.putText(img, line, (pad, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-        y += line_h
-
-
-# ── main loop ──────────────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser(description="View all UDP H264 streams in a grid")
-    parser.add_argument("--scale", type=int, default=2,
-                        help="Downscale factor for each stream (default: 4)")
-    args = parser.parse_args()
-
-    cfg = load_config(CONFIG_PATH)
-    nodes = cfg.get("nodes", [])
-    stream_w = cfg.get("stream_width", 1920)
-    stream_h = cfg.get("stream_height", 1080)
-
-    if not nodes:
-        print("No nodes found in config – exiting.")
-        return
-
-    # determine grid size: rows = nodes, cols = max ports across all nodes
-    n_rows = len(nodes)
-    n_cols = max(len(n.get("ports", [])) for n in nodes)
-
-    # create & start all captures
-    # grid[row][col] = StreamCapture | None
-    grid: list[list[StreamCapture | None]] = []
-    all_captures: list[StreamCapture] = []
-
-    for node in nodes:
-        row = []
-        name = node.get("name", "")
-        host = node.get("host", "")
-        mac = node.get("MAC", node.get("mac", ""))
-        for port in node.get("ports", []):
-            sc = StreamCapture(port, name, host, mac)
-            row.append(sc)
-            all_captures.append(sc)
-        # pad row to n_cols
-        while len(row) < n_cols:
-            row.append(None)
-        grid.append(row)
-
-    print(f"Starting {len(all_captures)} streams  ({n_rows} nodes × {n_cols} ports)  scale=1/{args.scale}")
-    for sc in all_captures:
-        sc.start()
-
-    scale = args.scale
-    show_text = True
-
-    cell_w = stream_w // scale
-    cell_h = stream_h // scale
-    canvas = np.zeros((cell_h * n_rows, cell_w * n_cols, 3), dtype=np.uint8)
-
-    last_seqs: list[list[int]] = [[-1 for _ in range(n_cols)] for _ in range(n_rows)]
-    cached_cells: list[list[np.ndarray | None]] = [[None for _ in range(n_cols)] for _ in range(n_rows)]
-
-    win_name = "All Streams"
-    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win_name, cell_w * n_cols, cell_h * n_rows)
-
-    # Keep UI responsive without hard-capping to 33 fps.
-    target_display_fps = 60.0
-    target_dt = 1.0 / target_display_fps
-    last_present = time.monotonic()
-
-    try:
-        while True:
-            # Preallocated canvas + per-cell caching is much faster than hstack/vstack.
-            canvas[:] = 0
-            resize_interp = cv2.INTER_AREA if scale >= 3 else cv2.INTER_LINEAR
-            for r in range(n_rows):
-                y0 = r * cell_h
-                y1 = y0 + cell_h
-                for c in range(n_cols):
-                    x0 = c * cell_w
-                    x1 = x0 + cell_w
-                    cell_view = canvas[y0:y1, x0:x1]
-
-                    sc = grid[r][c]
-                    if sc is None:
-                        continue
-
-                    frame, seq = sc.read()
-                    if frame is not None:
-                        if seq != last_seqs[r][c] or cached_cells[r][c] is None:
-                            cached_cells[r][c] = cv2.resize(frame, (cell_w, cell_h), interpolation=resize_interp)
-                            last_seqs[r][c] = seq
-                        cell_view[:] = cached_cells[r][c]
-                    else:
-                        cv2.putText(
-                            cell_view,
-                            "waiting...",
-                            (cell_w // 4, cell_h // 2),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            max(0.4, 0.7 / (scale ** 0.3)),
-                            (80, 80, 80),
-                            1,
-                            cv2.LINE_AA,
-                        )
-
-                    if show_text:
-                        draw_overlay(
-                            cell_view,
-                            [
-                                f"{sc.node_name}",
-                                f"port {sc.port}",
-                                f"{sc.mac}",
-                            ],
-                            scale,
-                        )
-
-            cv2.imshow(win_name, canvas)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-            elif key == ord('t'):
-                show_text = not show_text
-                print(f"Overlay text: {'ON' if show_text else 'OFF'}")
-            elif key in (ord('+'), ord('=')):
-                if scale > 1:
-                    scale -= 1
-                    cell_w = stream_w // scale
-                    cell_h = stream_h // scale
-                    canvas = np.zeros((cell_h * n_rows, cell_w * n_cols, 3), dtype=np.uint8)
-                    last_seqs = [[-1 for _ in range(n_cols)] for _ in range(n_rows)]
-                    cached_cells = [[None for _ in range(n_cols)] for _ in range(n_rows)]
-                    cv2.resizeWindow(win_name, cell_w * n_cols, cell_h * n_rows)
-                    print(f"Scale: 1/{scale}")
-            elif key in (ord('-'), ord('_')):
-                scale += 1
-                cell_w = stream_w // scale
-                cell_h = stream_h // scale
-                canvas = np.zeros((cell_h * n_rows, cell_w * n_cols, 3), dtype=np.uint8)
-                last_seqs = [[-1 for _ in range(n_cols)] for _ in range(n_rows)]
-                cached_cells = [[None for _ in range(n_cols)] for _ in range(n_rows)]
-                cv2.resizeWindow(win_name, cell_w * n_cols, cell_h * n_rows)
-                print(f"Scale: 1/{scale}")
-
-            # Light throttling to avoid pegging CPU while keeping headroom.
-            now = time.monotonic()
-            dt = now - last_present
-            if dt < target_dt:
-                time.sleep(target_dt - dt)
-            last_present = time.monotonic()
-
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print("Stopping all streams...")
-        for sc in all_captures:
-            sc.stop()
-        cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    main()
-
-
-# --------------------------------------------------------------------------------------------------------------------------------
-
-#!/usr/bin/env python3
-"""
-View all H264 UDP RTP streams in a single window.
-
-Reads nodes/ports from configs/stream_config.json and opens a GStreamer
-capture for every stream.  Frames are grabbed in parallel threads and
-composited into a 6-column × 4-row (ports × nodes) grid with OpenCV.
-
-Controls:
-    t  – toggle overlay text (node name / port / MAC)
-    +  – decrease downscale factor (zoom in)
-    -  – increase downscale factor (zoom out)
-    q  – quit
-
-Usage:
-    python3 view_all_streams.py              # default downscale=4
-    python3 view_all_streams.py --scale 2    # less downscale (bigger)
-    python3 view_all_streams.py --scale 8    # more downscale (smaller)
-"""
-
-import argparse
-import json
-import threading
-import time
-from pathlib import Path
-
-import cv2
-import numpy as np
-
-
-# ── config ──────────────────────────────────────────────────────────────────
-
-CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "stream_config.json"
-
-
-def load_config(path: Path) -> dict:
-    with open(path, "r") as f:
-        return json.load(f)
-
-
-# ── per-stream capture thread ──────────────────────────────────────────────
-
-class StreamCapture:
-    """Grabs frames from one GStreamer UDP/RTP H264 stream in a background thread."""
-
-    def __init__(self, port: int, node_name: str, host: str, mac: str):
-        self.port = port
-        self.node_name = node_name
-        self.host = host
-        self.mac = mac
-
-        self.frame = None          # latest BGR frame (or None)
-        self._lock = threading.Lock()
-        self._running = False
-        self._cap = None
-        self._thread = None
-
-    def start(self, timeout: float = 15.0, retry_interval: float = 3.0):
-        """Try to open the GStreamer capture with retries up to *timeout* seconds.
-
-        If it still can't open after the deadline, mark the stream as failed
-        (frame stays None → shown as black cell).
-        """
         self._running = True
         self._thread = threading.Thread(target=self._open_and_loop,
                                         args=(timeout, retry_interval),
@@ -447,14 +59,18 @@ class StreamCapture:
 
     def _open_and_loop(self, timeout: float, retry_interval: float):
         gst = (
-            f'udpsrc port={self.port} buffer-size=60000000 '
-            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96" ! '
-            f'rtpjitterbuffer latency=150 drop-on-latency=true ! '
-            f'rtph264depay ! h264parse ! '
-            f'nvh264dec ! '
-            f'videoconvert ! video/x-raw,format=BGR ! ' 
-            f'appsink sync=false max-buffers=1 drop=true'
+            f'udpsrc port={self.port} buffer-size=200000000 '
+            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H265, payload=96" ! '
+            f'rtpjitterbuffer latency=100 drop-on-latency=false ! '
+            f'queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! '
+            f'rtph265depay ! h265parse config-interval=1 ! '
+            f'queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! '
+            f'nvh265dec ! '
+            f'queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! '
+            f'videoconvert ! video/x-raw,format=BGR ! '
+            f'appsink sync=false max-buffers=4 drop=true emit-signals=false'
         )
+        
         deadline = time.monotonic() + timeout
         attempt = 0
         while self._running and time.monotonic() < deadline:
@@ -463,7 +79,7 @@ class StreamCapture:
             if cap.isOpened():
                 self._cap = cap
                 print(f"[OK]   port {self.port} ({self.node_name}) opened on attempt {attempt}")
-                self._loop()          # blocks until self._running is False
+                self._loop()
                 return
             cap.release()
             remaining = deadline - time.monotonic()
@@ -475,17 +91,32 @@ class StreamCapture:
         print(f"[FAIL] port {self.port} ({self.node_name}) – gave up after {timeout:.0f}s")
 
     def _loop(self):
+        """Capture loop - RESIZES FRAMES HERE in parallel thread"""
         while self._running and self._cap and self._cap.isOpened():
             ret, frame = self._cap.read()
             if ret and frame is not None:
+                # RESIZE IN THIS THREAD (parallel across all streams)
+                scaled = cv2.resize(frame, (self.target_width, self.target_height), 
+                                   interpolation=cv2.INTER_AREA)
+                
+                # Atomic swap - minimal lock time
                 with self._lock:
-                    self.frame = frame
+                    self.scaled_frame = scaled
+                
+                # FPS tracking
+                self.frame_count += 1
+                now = time.time()
+                if now - self.last_fps_check >= 1.0:
+                    self.current_fps = self.frame_count / (now - self.last_fps_check)
+                    self.frame_count = 0
+                    self.last_fps_check = now
             else:
-                time.sleep(0.005)
+                time.sleep(0.001)
 
-    def read(self):
+    def read_scaled(self):
+        """Returns pre-scaled frame - NO RESIZE NEEDED"""
         with self._lock:
-            return self.frame
+            return self.scaled_frame
 
     def stop(self):
         self._running = False
@@ -499,17 +130,14 @@ class StreamCapture:
             self._cap = None
 
 
-# ── text overlay ────────────────────────────────────────────────────────────
-
 def draw_overlay(img, text_lines, scale_factor):
-    """Draw semi-transparent text lines at top-left of *img* (mutates in place)."""
+    """Draw overlay - optimized version"""
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = max(0.35, 0.6 / (scale_factor ** 0.3))
     thickness = 1
     line_h = int(20 / (scale_factor ** 0.3))
     pad = 4
 
-    # compute background rectangle
     max_w = 0
     for line in text_lines:
         (w, _), _ = cv2.getTextSize(line, font, font_scale, thickness)
@@ -517,24 +145,24 @@ def draw_overlay(img, text_lines, scale_factor):
     bg_h = line_h * len(text_lines) + pad * 2
     bg_w = max_w + pad * 2
 
-    # draw translucent black box
-    overlay = img.copy()
+    # Optimized overlay drawing
+    overlay = img[:bg_h, :bg_w].copy()
     cv2.rectangle(overlay, (0, 0), (bg_w, bg_h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
+    img[:bg_h, :bg_w] = cv2.addWeighted(overlay, 0.55, img[:bg_h, :bg_w], 0.45, 0)
 
-    # draw text
     y = pad + line_h - 4
     for line in text_lines:
-        cv2.putText(img, line, (pad, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        cv2.putText(img, line, (pad, y), font, font_scale, (255, 255, 255), 
+                   thickness, cv2.LINE_AA)
         y += line_h
 
 
-# ── main loop ──────────────────────────────────────────────────────────────
-
 def main():
-    parser = argparse.ArgumentParser(description="View all UDP H264 streams in a grid")
+    parser = argparse.ArgumentParser(description="High-performance multi-stream viewer")
     parser.add_argument("--scale", type=int, default=4,
-                        help="Downscale factor for each stream (default: 4)")
+                        help="Downscale factor (default: 4)")
+    parser.add_argument("--fps-monitor", action="store_true",
+                        help="Show per-stream FPS in overlay")
     args = parser.parse_args()
 
     cfg = load_config(CONFIG_PATH)
@@ -546,12 +174,21 @@ def main():
         print("No nodes found in config – exiting.")
         return
 
-    # determine grid size: rows = nodes, cols = max ports across all nodes
     n_rows = len(nodes)
     n_cols = max(len(n.get("ports", [])) for n in nodes)
 
-    # create & start all captures
-    # grid[row][col] = StreamCapture | None
+    scale = args.scale
+    cell_w = stream_w // scale
+    cell_h = stream_h // scale
+
+    # Pre-allocate black cell
+    black_cell = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
+    cv2.putText(black_cell, "waiting...",
+                (cell_w // 4, cell_h // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, max(0.4, 0.7 / (scale ** 0.3)),
+                (80, 80, 80), 1, cv2.LINE_AA)
+
+    # Create captures - they will PRE-SCALE frames
     grid: list[list[StreamCapture | None]] = []
     all_captures: list[StreamCapture] = []
 
@@ -561,87 +198,114 @@ def main():
         host = node.get("host", "")
         mac = node.get("MAC", node.get("mac", ""))
         for port in node.get("ports", []):
-            sc = StreamCapture(port, name, host, mac)
+            # Pass target dimensions - frames will be scaled in capture thread
+            sc = StreamCapture(port, name, host, mac, cell_w, cell_h)
             row.append(sc)
             all_captures.append(sc)
-        # pad row to n_cols
         while len(row) < n_cols:
             row.append(None)
         grid.append(row)
 
-    print(f"Starting {len(all_captures)} streams  ({n_rows} nodes × {n_cols} ports)  scale=1/{args.scale}")
+    print(f"Starting {len(all_captures)} streams ({n_rows}×{n_cols}) at {cell_w}×{cell_h} each")
     for sc in all_captures:
         sc.start()
 
-    scale = args.scale
     show_text = True
+    show_fps = args.fps_monitor
 
-    cell_w = stream_w // scale
-    cell_h = stream_h // scale
-    black_cell = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
-
-    win_name = "All Streams"
+    win_name = "All Streams - High Performance"
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_name, cell_w * n_cols, cell_h * n_rows)
 
+    # Performance monitoring for main loop
+    frame_times = deque(maxlen=30)
+    last_time = time.time()
+
     try:
         while True:
+            loop_start = time.time()
+            
+            # Build grid - frames are ALREADY SCALED
             rows_imgs = []
             for r in range(n_rows):
                 cols_imgs = []
                 for c in range(n_cols):
                     sc = grid[r][c]
-                    frame = sc.read() if sc else None
-                    if frame is not None:
-                        cell = cv2.resize(frame, (cell_w, cell_h), interpolation=cv2.INTER_AREA)
+                    
+                    if sc:
+                        # NO RESIZE - frame is already scaled!
+                        cell = sc.read_scaled()
+                        if cell is None:
+                            cell = black_cell.copy()
                     else:
                         cell = black_cell.copy()
-                        if sc is not None:
-                            # show "waiting" text on black cell
-                            cv2.putText(cell, "waiting...",
-                                        (cell_w // 4, cell_h // 2),
-                                        cv2.FONT_HERSHEY_SIMPLEX, max(0.4, 0.7 / (scale ** 0.3)),
-                                        (80, 80, 80), 1, cv2.LINE_AA)
 
-                    if show_text and sc is not None:
-                        draw_overlay(cell, [
-                            f"{sc.node_name}",
-                            f"port {sc.port}",
-                            f"{sc.mac}",
-                        ], scale)
+                    # Add overlay if enabled
+                    if show_text and sc is not None and cell is not black_cell:
+                        text_lines = [f"{sc.node_name}", f"port {sc.port}", f"{sc.mac}"]
+                        if show_fps:
+                            text_lines.append(f"FPS: {sc.current_fps:.1f}")
+                        draw_overlay(cell, text_lines, scale)
 
                     cols_imgs.append(cell)
+                
+                # Stack horizontally - pre-allocated size
                 rows_imgs.append(np.hstack(cols_imgs))
+            
+            # Stack vertically - single operation
             canvas = np.vstack(rows_imgs)
-
+            
             cv2.imshow(win_name, canvas)
 
-            key = cv2.waitKey(30) & 0xFF
+            # Track main loop performance
+            loop_time = time.time() - loop_start
+            frame_times.append(loop_time)
+            
+            # Show stats every second
+            now = time.time()
+            if now - last_time >= 1.0:
+                avg_time = sum(frame_times) / len(frame_times)
+                display_fps = 1.0 / avg_time if avg_time > 0 else 0
+                print(f"Display: {display_fps:.1f} FPS (loop time: {avg_time*1000:.1f}ms)")
+                last_time = now
+
+            # Minimal wait
+            key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
             elif key == ord('t'):
                 show_text = not show_text
                 print(f"Overlay text: {'ON' if show_text else 'OFF'}")
+            elif key == ord('f'):
+                show_fps = not show_fps
+                print(f"FPS monitor: {'ON' if show_fps else 'OFF'}")
             elif key in (ord('+'), ord('=')):
                 if scale > 1:
                     scale -= 1
                     cell_w = stream_w // scale
                     cell_h = stream_h // scale
+                    # Update all captures with new target size
+                    for sc in all_captures:
+                        sc.target_width = cell_w
+                        sc.target_height = cell_h
                     black_cell = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
                     cv2.resizeWindow(win_name, cell_w * n_cols, cell_h * n_rows)
-                    print(f"Scale: 1/{scale}")
+                    print(f"Scale: 1/{scale} ({cell_w}×{cell_h} per stream)")
             elif key in (ord('-'), ord('_')):
                 scale += 1
                 cell_w = stream_w // scale
                 cell_h = stream_h // scale
+                for sc in all_captures:
+                    sc.target_width = cell_w
+                    sc.target_height = cell_h
                 black_cell = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
                 cv2.resizeWindow(win_name, cell_w * n_cols, cell_h * n_rows)
-                print(f"Scale: 1/{scale}")
+                print(f"Scale: 1/{scale} ({cell_w}×{cell_h} per stream)")
 
     except KeyboardInterrupt:
         pass
     finally:
-        print("Stopping all streams...")
+        print("\nStopping all streams...")
         for sc in all_captures:
             sc.stop()
         cv2.destroyAllWindows()

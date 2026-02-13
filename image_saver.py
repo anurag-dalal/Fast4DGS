@@ -189,11 +189,14 @@ class StreamSaverApp:
 
         # build GStreamer pipeline for appsink with minimal buffering
         gst_pipeline = (
-            f'udpsrc port={self.port} caps="application/x-rtp, media=video, encoding-name=H264, payload=96" '
-            "! rtph264depay ! h264parse ! nvh264dec ! videoconvert ! "
-            "appsink sync=false max-buffers=1 drop=true"
+            f'udpsrc port={self.port} buffer-size=200000000 '
+            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H265, payload=96" ! '
+            f'rtpjitterbuffer latency=15 drop-on-latency=true ! '
+            f'rtph265depay ! h265parse config-interval=1 ! '
+            f'nvh265dec ! '          
+            f'videoconvert ! video/x-raw,format=BGR ! '
+            f'appsink sync=false max-buffers=1 drop=true'
         )
-
         self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
         if not self.cap.isOpened():
             messagebox.showerror("Stream error", "Unable to open stream. Ensure GStreamer is installed and the pipeline is correct.")

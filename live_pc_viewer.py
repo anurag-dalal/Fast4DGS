@@ -56,14 +56,12 @@ class StreamCapture:
     def _open_and_loop(self, timeout: float, retry_interval: float):
         # Optimized pipeline for low latency and quality
         gst = (
-            f'udpsrc port={self.port} buffer-size=60000000 '
-            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96" ! '
-            f'rtpjitterbuffer latency=150 drop-on-latency=true ! '
-            f'rtph264depay ! h264parse ! '
-            f'nvh264dec ! '
-            f'cudaconvert ! '
-            f'cudadownload ! '
-            f'videoconvert ! video/x-raw,format=BGR ! ' 
+            f'udpsrc port={self.port} buffer-size=200000000 '
+            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H265, payload=96" ! '
+            f'rtpjitterbuffer latency=15 drop-on-latency=true ! '
+            f'rtph265depay ! h265parse config-interval=1 ! '
+            f'nvh265dec enable-max-performance=1 ! '          
+            f'videoconvert ! video/x-raw,format=BGR ! '
             f'appsink sync=false max-buffers=1 drop=true'
         )
         deadline = time.monotonic() + timeout
@@ -231,9 +229,20 @@ def main():
             # Colorize
             colors = input_tensor.permute(0, 2, 3, 1).cpu().float().numpy() # [B, H, W, 3]
             
+            if isinstance(points, torch.Tensor):
+                points = points.cpu().float().numpy()
+
             points_flat = points.reshape(-1, 3)
             colors_flat = colors.reshape(-1, 3)
             
+            # RAMBO: Remove all dark greyish to black points
+            # We filter based on intensity (mean of RGB). 
+            # Threshold 0.1 roughly corresponds to dark grey.
+            intensity = np.mean(colors_flat, axis=1)
+            valid_color_mask = intensity > 0.1
+            points_flat = points_flat[valid_color_mask]
+            colors_flat = colors_flat[valid_color_mask]
+
             # Filter invalid points (depth > 0 or not infinite)
             # depth_map usually has 0 for invalid?
             # unproject handles it.

@@ -68,12 +68,17 @@ for i in $(seq $START_DEVICE $END_DEVICE); do
 
   echo "Launching pipeline for $DEVICE to $HOST_IP:$PORT with bitrate $BITRATE"
 
-  gst-launch-1.0 nvv4l2camerasrc device=$DEVICE ! \
-    "video/x-raw(memory:NVMM), format=(string)UYVY, width=(int)1920, height=(int)1080" ! \
-    queue ! nvvidconv ! "video/x-raw(memory:NVMM), format=(string)I420" ! \
-    nvv4l2h264enc bitrate=$BITRATE iframeinterval=10 insert-sps-pps=true profile=2 ! \
-    rtph264pay config-interval=1 pt=96 ! \
-    udpsink clients=$HOST_IP:$PORT sync=true &
+gst-launch-1.0 nvv4l2camerasrc device=$DEVICE ! \
+  "video/x-raw(memory:NVMM), format=(string)UYVY, width=(int)1920, height=(int)1080" ! \
+  queue max-size-buffers=3 ! nvvidconv ! "video/x-raw(memory:NVMM), format=(string)I420" ! \
+  nvv4l2h265enc bitrate=$BITRATE  preset-level=4 \
+    idrinterval=15 insert-sps-pps=true insert-vui=true \
+    control-rate=1 ratecontrol-enable=true ! \
+  h265parse config-interval=1 ! \
+  rtph265pay config-interval=1 pt=96 mtu=1400 ! \
+  udpsink clients=$HOST_IP:$PORT sync=false async=false &
+
+
 
 done
 

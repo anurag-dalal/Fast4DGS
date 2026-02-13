@@ -189,15 +189,9 @@ class StreamSaverApp:
 
         # build GStreamer pipeline for appsink with minimal buffering
         gst_pipeline = (
-            f'udpsrc port={self.port} buffer-size=60000000 '
-            f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96" ! '
-            f'rtpjitterbuffer latency=150 drop-on-latency=true ! '
-            f'rtph264depay ! h264parse ! '
-            f'nvh264dec ! '
-            f'cudaconvert ! '
-            f'cudadownload ! '
-            f'videoconvert ! video/x-raw,format=BGR ! ' 
-            f'appsink sync=false max-buffers=1 drop=true'
+            f'udpsrc port={self.port} caps="application/x-rtp, media=video, encoding-name=H264, payload=96" '
+            "! rtph264depay ! h264parse ! nvh264dec ! videoconvert ! "
+            "appsink sync=false max-buffers=1 drop=true"
         )
 
         self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)

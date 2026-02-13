@@ -69,13 +69,13 @@ class StreamCapture:
 
     def _open_and_loop(self, timeout: float, retry_interval: float):
         gst = (
-            f'udpsrc port={self.port} buffer-size=60000000 '
+            f'udpsrc port={self.port} buffer-size=100000000 ' 
             f'caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=H264, payload=96" ! '
-            f'rtpjitterbuffer latency=150 drop-on-latency=true ! '
-            f'rtph264depay ! h264parse ! '
-            f'nvh264dec ! '
-            f'cudaconvert ! '
-            f'cudadownload ! '
+            f'rtpjitterbuffer latency=50 drop-on-latency=true ! '
+            f'rtph264depay ! h264parse config-interval=1 ! '
+            f'nvh264dec disable-dpb=true ! '
+            # f'cudaconvert ! '
+            # f'cudadownload ! '
             f'videoconvert ! video/x-raw,format=BGR ! ' 
             f'appsink sync=false max-buffers=1 drop=true'
         )

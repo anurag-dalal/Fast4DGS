@@ -54,7 +54,7 @@ done
 #### ------------ CONFIGURE THE START PORT
 # Variables
 HOST_IP="10.0.0.24"
-BITRATE=10000000         # Default bitrate
+BITRATE=20000000         # Default bitrate
 START_PORT=6000         # Default starting port
 START_DEVICE=0          # Start with /dev/video0
 END_DEVICE=5            # End with /dev/video5
@@ -77,20 +77,12 @@ for i in $(seq $START_DEVICE $END_DEVICE); do
 
   echo "Launching pipeline for $DEVICE to $HOST_IP:$PORT with bitrate $BITRATE"
 
-gst-launch-1.0 nvv4l2camerasrc device=$DEVICE ! \
-  "video/x-raw(memory:NVMM), format=(string)UYVY, width=(int)1920, height=(int)1080, framerate=30/1" ! \
-  nvvidconv ! "video/x-raw(memory:NVMM), format=(string)I420" ! \
-  nvv4l2h264enc \
-    bitrate=$BITRATE \
-    control-rate=1 \
-    preset-level=1 \
-    profile=4 \
-    iframeinterval=30 \
-    insert-sps-pps=true \
-    maxperf-enable=1 ! \
-  rtph264pay config-interval=1 pt=96 mtu=1400 ! \
-  udpsink clients=$HOST_IP:$PORT sync=true &
-
+  gst-launch-1.0 nvv4l2camerasrc device=$DEVICE ! \
+    "video/x-raw(memory:NVMM), format=(string)UYVY, width=(int)1920, height=(int)1080" ! \
+    queue ! nvvidconv ! "video/x-raw(memory:NVMM), format=(string)I420" ! \
+    nvv4l2h264enc bitrate=$BITRATE iframeinterval=10 insert-sps-pps=true profile=2 ! \
+    rtph264pay config-interval=1 pt=96 ! \
+    udpsink clients=$HOST_IP:$PORT sync=true &
 done
 
 # Wait for all background pipelines to finish

@@ -103,6 +103,7 @@ class StreamCapture:
             if ret and frame is not None:
                 with self._lock:
                     self.frame = frame
+                    print(frame.shape)
             else:
                 time.sleep(0.005)
 

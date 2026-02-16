@@ -59,7 +59,7 @@ class StreamSaverApp:
         self.save_index = 1
 
     def _build_ui(self):
-        self.root.minsize(1920, 1200)
+        self.root.minsize(1920, 1080)
 
         # ── controls frame ──
         frm = tk.Frame(self.root, padx=12, pady=8)

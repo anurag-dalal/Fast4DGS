@@ -48,7 +48,7 @@ num sqaures: 14 x 14
     --object-height-n 14 \
     --object-spacing 0.013 \
     --focal 750 \
-    --imagersize 1200 1920 \
+    --imagersize 1080 1920 \
     --outdir . \
     "*.png"
 
@@ -61,6 +61,7 @@ num sqaures: 14 x 14
   --object-height-n 14                                                          \
   '*.png'
 ---------- works ------------------
+* mrgingham --jobs 4 --gridn 14 '*.png' > corners.vnl
 * mrcal-calibrate-cameras                                                         \
   --corners-cache corners.vnl                                                   \
   --lensmodel LENSMODEL_OPENCV8 \
@@ -123,3 +124,5 @@ video6: Unknown device "/dev/video6": No such file or directory
 sudo apt-get update
 sudo apt-get install libgstrtspserver-1.0-0 libgstreamer-plugins-base1.0-dev
 sudo apt install deepstream-7.0
+
+-0.0516463965;-0.04747710885;-0.0001566917679;0.0002697267978;0.01013947186;0.3133340326;-0.1464375728;0.02119491113

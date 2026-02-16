@@ -234,28 +234,12 @@ def main():
 
             points_flat = points.reshape(-1, 3)
             colors_flat = colors.reshape(-1, 3)
-
-            # Filter by radius from mean camera position
-            # extrinsic: [S, 3, 4]
-            # Camera center in world frame: C = -R^T * t
-            R = extrinsic[:, :3, :3]
-            t = extrinsic[:, :3, 3]
-            # Batched calculation of centers: (S, 3)
-            centers = -torch.bmm(R.transpose(1, 2), t.unsqueeze(-1)).squeeze(-1)
-            mean_center = torch.mean(centers, dim=0).cpu().numpy()
-            
-            radius = .8 # Adjustable radius
-            
-            dists = np.linalg.norm(points_flat - mean_center, axis=1)
-            radius_mask = dists < radius
-            points_flat = points_flat[radius_mask]
-            colors_flat = colors_flat[radius_mask]
             
             # RAMBO: Remove all dark greyish to black points
             # We filter based on intensity (mean of RGB). 
             # Threshold 0.1 roughly corresponds to dark grey.
             intensity = np.mean(colors_flat, axis=1)
-            valid_color_mask = intensity > 0.05
+            valid_color_mask = intensity > 0.1
             points_flat = points_flat[valid_color_mask]
             colors_flat = colors_flat[valid_color_mask]
 

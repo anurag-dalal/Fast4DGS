@@ -27,6 +27,7 @@ END_DEVICE=${sorted[$((${#sorted[@]}-1))]}
 echo "Configuring cameras for external trigger mode..."
 for i in $(seq $START_DEVICE $END_DEVICE); do
   DEVICE="/dev/video$i"
+  v4l2-ctl --device=$DEVICE --set-fmt-video=width=1920,height=1080,pixelformat=UYVY
   echo "Setting up $DEVICE for external trigger"
 
   # Set trigger mode to external (1)

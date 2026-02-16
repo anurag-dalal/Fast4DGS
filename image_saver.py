@@ -59,7 +59,7 @@ class StreamSaverApp:
         self.save_index = 1
 
     def _build_ui(self):
-        self.root.minsize(720, 480)
+        self.root.minsize(1920, 1200)
 
         # ── controls frame ──
         frm = tk.Frame(self.root, padx=12, pady=8)
@@ -244,7 +244,7 @@ class StreamSaverApp:
                 self.latest_frame = frame.copy()
             except Exception:
                 self.latest_frame = frame
-
+            print(frame.shape)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
             imgtk = ImageTk.PhotoImage(image=img)

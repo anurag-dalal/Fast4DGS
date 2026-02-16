@@ -135,7 +135,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--chunk_size", type=int, default=512)
     parser.add_argument("--port", type=int, default=8080, help="Viser port")
-    parser.add_argument("--scale", type=int, default=1, help="Downscale frame for VGGT (unused currently)")
+    parser.add_argument("--scale", type=int, default=8, help="Downscale frame for VGGT (unused currently)")
     args = parser.parse_args()
 
     # Load Config
@@ -239,7 +239,7 @@ def main():
             # We filter based on intensity (mean of RGB). 
             # Threshold 0.1 roughly corresponds to dark grey.
             intensity = np.mean(colors_flat, axis=1)
-            valid_color_mask = intensity > 0.1
+            valid_color_mask = intensity > 0.01
             points_flat = points_flat[valid_color_mask]
             colors_flat = colors_flat[valid_color_mask]
 

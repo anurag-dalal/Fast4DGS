@@ -40,9 +40,7 @@ num sqaures: 14 x 14
     * dataset_path: '/home/anurag/Codes/Fast4DGS/dataset/calibration_data/$port/*.png'
     * mrgingham --jobs 4 --gridn 14 dataset_path > '/home/anurag/Codes/Fast4DGS/dataset/calibration/$port/corners.vnl
 * Visualization
-    * $ < corners.vnl       \
-  vnl-filter -p x,y | \
-  feedgnuplot --domain --square --set 'xrange [0:6000] noextend' --set 'yrange [3376:0] noextend'
+    * < corners.vnl         vnl-filter -p x,y |   feedgnuplot --domain --square --set 'xrange [0:1920] noextend' --set 'yrange [1080:0] noextend'
 * mrcal-calibrate-cameras \
     --corners-cache corners.vnl \
     --lensmodel LENSMODEL_SPLINED_STEREOGRAPHIC \
@@ -50,9 +48,9 @@ num sqaures: 14 x 14
     --object-height-n 14 \
     --object-spacing 0.013 \
     --focal 750 \
-    --imagersize 1330 1767 \
+    --imagersize 1200 1920 \
     --outdir . \
-    "*.jpeg"
+    "*.png"
 
 * mrcal-calibrate-cameras                                                         \
   --corners-cache corners.vnl                                                   \
@@ -60,9 +58,28 @@ num sqaures: 14 x 14
   --focal 800                                                                  \
   --object-spacing 0.013                                                       \
   --object-width-n 14                                                           \
-  '*.jpeg'
+  --object-height-n 14                                                          \
+  '*.png'
+---------- works ------------------
+* mrcal-calibrate-cameras                                                         \
+  --corners-cache corners.vnl                                                   \
+  --lensmodel LENSMODEL_OPENCV8 \
+  --focal 800                                                                  \
+  --object-spacing 0.013                                                       \
+  --object-width-n 14                                                           \
+  --object-height-n 14                                                          \
+  '*.png'
 
+* mrcal-show-projection-uncertainty camera-0.cameramodel --cbmax 1 --unset key
+* mrcal-show-projection-uncertainty \
+  --output uncertainty_map.png \
+  camera-0.cameramodel
 
+* mrcal-show-projection-uncertainty \
+  --terminal 'dumb' \
+  --data-only \
+  camera-0.cameramodel \
+  > uncertainty_data.csv
 # ssh
 for ips, pass in [(user1, ip1, pass1), (user2, ip2, pass2), ....]
     ssh user1:ip1
@@ -100,3 +117,9 @@ video3:     ATTR{name}=="vi-output, ecam_gmsl 10-0044"
 video4:     ATTR{name}=="vi-output, ecam_gmsl 11-0043"
 video5:     ATTR{name}=="vi-output, ecam_gmsl 11-0044"
 video6: Unknown device "/dev/video6": No such file or directory
+
+
+## deepstream based live undistortion
+sudo apt-get update
+sudo apt-get install libgstrtspserver-1.0-0 libgstreamer-plugins-base1.0-dev
+sudo apt install deepstream-7.0

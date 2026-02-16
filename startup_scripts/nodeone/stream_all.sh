@@ -1,6 +1,7 @@
 #!/bin/bash
 
-
+conda deactivate
+conda deactivate
 ### ------------ WAIT TILL MASTER IS UP AND RUNNING
 ### ------------ CONFIG MASTER_IP
 MASTER_IP="10.0.0.3"
@@ -71,16 +72,44 @@ if [ ! -z "$3" ]; then
   START_PORT=$3
 fi
 
+# # Loop through video devices
+# for i in $(seq $START_DEVICE $END_DEVICE); do
+#   DEVICE="/dev/video$i"
+#   PORT=$((START_PORT + i))
+
+#   echo "Launching pipeline for $DEVICE to $HOST_IP:$PORT with bitrate $BITRATE"
+
+# gst-launch-1.0 nvv4l2camerasrc device=$DEVICE ! \
+#   "video/x-raw(memory:NVMM), format=(string)UYVY, width=(int)1920, height=(int)1080" ! \
+#   queue max-size-buffers=3 ! nvvidconv ! "video/x-raw(memory:NVMM), format=(string)I420" ! \
+#   nvv4l2h265enc bitrate=$BITRATE  preset-level=4 \
+#     idrinterval=15 insert-sps-pps=true insert-vui=true \
+#     control-rate=1 ratecontrol-enable=true ! \
+#   h265parse config-interval=1 ! \
+#   rtph265pay config-interval=1 pt=96 mtu=1400 ! \
+#   udpsink clients=$HOST_IP:$PORT sync=false async=false &
+
+# done
+
+# # Wait for all background pipelines to finish
+# wait
+
 # Loop through video devices
 for i in $(seq $START_DEVICE $END_DEVICE); do
   DEVICE="/dev/video$i"
   PORT=$((START_PORT + i))
+  # Assuming config files are named config_dewarper_cam_0.txt, config_dewarper_cam_1.txt, etc.
+  # CONFIG_FILE="config_dewarper_cam_${i}.txt"
+  CONFIG_FILE="config_dewarper_cam.txt"
 
-  echo "Launching pipeline for $DEVICE to $HOST_IP:$PORT with bitrate $BITRATE"
+  echo "Launching pipeline for $DEVICE to $HOST_IP:$PORT with bitrate $BITRATE using config $CONFIG_FILE"
 
 gst-launch-1.0 nvv4l2camerasrc device=$DEVICE ! \
   "video/x-raw(memory:NVMM), format=(string)UYVY, width=(int)1920, height=(int)1080" ! \
-  queue max-size-buffers=3 ! nvvidconv ! "video/x-raw(memory:NVMM), format=(string)I420" ! \
+  queue max-size-buffers=3 ! \
+  nvvidconv ! "video/x-raw(memory:NVMM), format=(string)RGBA" ! \
+  nvdewarper config-file=$CONFIG_FILE source-id=0 ! \
+  nvvidconv ! "video/x-raw(memory:NVMM), format=(string)I420" ! \
   nvv4l2h265enc bitrate=$BITRATE  preset-level=4 \
     idrinterval=15 insert-sps-pps=true insert-vui=true \
     control-rate=1 ratecontrol-enable=true ! \

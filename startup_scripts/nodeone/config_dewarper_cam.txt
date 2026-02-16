@@ -1,0 +1,25 @@
+[property]
+# 0=Perspective(Undistort), 1=PushBroom, 2=VertRadCyl, 3=Equirectangular
+projection-type=3
+width=1920
+height=1200
+output-width=1920
+output-heigh=1200
+# 0=Cuda, 1=Cpu, 2=Vic
+focal-length=1042.00
+distortion=-0.2578444327;-0.04614207301;-0.0004320010023;0.0006901711694;0.01511837276;0.1060897876;-0.215307902;0.03708422292
+# Center of the lens (usually width/2, height/2)
+src-x0=950.6477088
+src-y0=557.5285168
+
+[surface0]
+# 0=Perspective, 1=Fisheye, etc.
+projection-type=3
+width=1920
+height=1200
+output-width=1920
+output-heigh=1200
+focal-length=1042.00
+distortion=-0.2578444327;-0.04614207301;-0.0004320010023;0.0006901711694;0.01511837276;0.1060897876;-0.215307902;0.03708422292
+src-x0=950.6477088
+src-y0=557.5285168

@@ -126,3 +126,30 @@ sudo apt-get install libgstrtspserver-1.0-0 libgstreamer-plugins-base1.0-dev
 sudo apt install deepstream-7.0
 
 -0.0516463965;-0.04747710885;-0.0001566917679;0.0002697267978;0.01013947186;0.3133340326;-0.1464375728;0.02119491113
+
+## ROS PointCloud2 publisher
+conda activate vision
+source /opt/ros/humble/setup.bash
+sudo -E /home/anurag/miniconda3/envs/vision/bin/python pointcloud_ros.py
+
+or
+
+/home/anurag/miniconda3/envs/vision/bin/python pointcloud_ros.py
+
+## COLMAP Reconstruction
+/home/anurag/Codes/colmap/build/src/colmap/exe/colmap automatic_reconstructor   --dense 0  --workspace_path /home/anurag/stream_captures     --image_path /home/anurag/stream_captures/images     --camera_model FULL_OPENCV     --single_camera 0     --data_type individual     --quality high
+
+/home/anurag/Codes/colmap/build/src/colmap/exe/colmap feature_extractor \
+    --database_path /home/anurag/stream_captures/database.db \
+    --image_path /home/anurag/stream_captures/images \
+    --ImageReader.camera_model FULL_OPENCV \
+    --ImageReader.single_camera 0
+
+/home/anurag/Codes/colmap/build/src/colmap/exe/colmap exhaustive_matcher \
+    --database_path /home/anurag/stream_captures/database.db
+/home/anurag/Codes/colmap/build/src/colmap/exe/colmap sequential_matcher \
+    --database_path /home/anurag/stream_captures/database.db
+/home/anurag/Codes/colmap/build/src/colmap/exe/colmap mapper \
+    --database_path /home/anurag/stream_captures/database.db \
+    --image_path /home/anurag/stream_captures/images \
+    --output_path /home/anurag/stream_captures/sparse

@@ -10,8 +10,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
-from scipy.spatial import cKDTree
 from PIL import Image
 import viser
 import viser.transforms as vtf
@@ -106,174 +104,6 @@ class StreamCapture:
         if self._cap:
             self._cap.release()
 
-# ── Bundle Adjustment helpers ────────────────────────────────────────────
-
-def axis_angle_to_rotation_matrix(aa):
-    """Rodrigues: axis-angle [N, 3] -> rotation matrix [N, 3, 3]."""
-    theta = torch.norm(aa, dim=-1, keepdim=True)          # [N, 1]
-    safe = (theta > 1e-8).squeeze(-1)
-    axis = aa / (theta + 1e-8)                             # [N, 3]
-
-    zero = torch.zeros_like(axis[..., 0])
-    K = torch.stack([
-        zero,          -axis[..., 2],  axis[..., 1],
-        axis[..., 2],  zero,          -axis[..., 0],
-       -axis[..., 1],  axis[..., 0],  zero,
-    ], dim=-1).reshape(*axis.shape[:-1], 3, 3)
-
-    eye = torch.eye(3, device=aa.device, dtype=aa.dtype).expand_as(K)
-    sin_t = torch.sin(theta).unsqueeze(-1)                 # [N, 1, 1]
-    cos_t = torch.cos(theta).unsqueeze(-1)
-    R = eye + sin_t * K + (1 - cos_t) * (K @ K)
-    return R
-
-
-def bundle_adjust(extrinsic, intrinsic, depth_map, images, depth_conf,
-                  n_iters=30, lr=5e-4, n_samples=4096, device='cuda'):
-    """
-    Global bundle adjustment in PyTorch.
-    Jointly refines camera extrinsics and per-pixel depth via
-    multi-view geometric + photometric consistency.
-
-    Args:
-        extrinsic:  [S, 3, 4]  world-to-camera [R|t]
-        intrinsic:  [S, 3, 3]  camera intrinsics
-        depth_map:  [S, H, W, 1]  z-depth
-        images:     [S, 3, H, W]  RGB 0-1
-        depth_conf: [S, H, W]  per-pixel confidence
-        n_iters:    optimisation steps
-        lr:         learning rate
-        n_samples:  points sampled per source view
-        device:     torch device
-
-    Returns:
-        refined_extrinsic: [S, 3, 4]
-        refined_depth:     [S, H, W, 1]
-    """
-    S, H, W, _ = depth_map.shape
-    if S < 2:
-        return extrinsic, depth_map
-
-    # ── cast to float32 for stable gradients ──
-    # .clone() required because tensors come from torch.inference_mode()
-    R_init = extrinsic[:, :3, :3].detach().clone().float().to(device)
-    t_init = extrinsic[:, :3, 3].detach().clone().float().to(device)
-    K      = intrinsic.detach().clone().float().to(device)
-    d_init = depth_map.detach().clone().float().to(device)
-    conf   = depth_conf.detach().clone().float().to(device)
-    imgs   = images.detach().clone().float().to(device)       # [S,3,H,W]
-    imgs_hwc = imgs.permute(0, 2, 3, 1)                       # [S,H,W,3]
-
-    # ── optimisable perturbation parameters (zero = no change) ──
-    delta_aa = torch.nn.Parameter(torch.zeros(S, 3, device=device))
-    delta_t  = torch.nn.Parameter(torch.zeros(S, 3, device=device))
-    log_dc   = torch.nn.Parameter(torch.zeros(S, H, W, 1, device=device))
-
-    optimizer = torch.optim.Adam([
-        {'params': delta_aa, 'lr': lr},
-        {'params': delta_t,  'lr': lr},
-        {'params': log_dc,   'lr': lr * 2},
-    ])
-
-    # ── pre-compute pixel grid & inverse intrinsics ──
-    K_inv = torch.inverse(K)                                   # [S,3,3]
-    vs, us = torch.meshgrid(
-        torch.arange(H, device=device, dtype=torch.float32),
-        torch.arange(W, device=device, dtype=torch.float32),
-        indexing='ij')
-    pix = torch.stack([us, vs, torch.ones_like(us)], dim=-1).reshape(-1, 3)  # [HW,3]
-
-    # confidence-weighted sampling distribution per view
-    conf_flat = conf.reshape(S, -1).clamp(min=1e-6)
-    sample_w  = conf_flat / conf_flat.sum(dim=-1, keepdim=True)
-
-    for step in range(n_iters):
-        optimizer.zero_grad()
-
-        dR    = axis_angle_to_rotation_matrix(delta_aa)        # [S,3,3]
-        R     = dR @ R_init
-        t     = t_init + delta_t
-        depth = d_init * torch.exp(log_dc.clamp(-0.3, 0.3))   # [S,H,W,1]
-
-        loss    = torch.tensor(0.0, device=device)
-        n_pairs = 0
-
-        for i in range(S):
-            # unproject view-i pixels → world
-            rays_cam = (K_inv[i] @ pix.T).T                    # [HW,3]
-            pts_cam  = rays_cam * depth[i].reshape(-1, 1)      # [HW,3]
-            pts_w    = (R[i].T @ (pts_cam - t[i]).T).T         # [HW,3]
-
-            with torch.no_grad():
-                idx = torch.multinomial(sample_w[i], n_samples, replacement=True)
-
-            pts_s = pts_w[idx]                                 # [N,3]
-            col_s = imgs_hwc[i].reshape(-1, 3)[idx]            # [N,3]
-
-            for j in range(S):
-                if i == j:
-                    continue
-
-                # project into view j
-                pts_cj = (R[j] @ pts_s.T).T + t[j]            # [N,3]
-                zj     = pts_cj[:, 2:3]                        # [N,1]
-                proj   = (K[j] @ pts_cj.T).T                  # [N,3]
-                uv     = proj[:, :2] / (zj + 1e-8)
-
-                # normalise to [-1,1] for grid_sample
-                uv_n = torch.empty_like(uv)
-                uv_n[:, 0] = 2.0 * uv[:, 0] / (W - 1) - 1.0
-                uv_n[:, 1] = 2.0 * uv[:, 1] / (H - 1) - 1.0
-
-                valid = (uv_n[:, 0].abs() < 0.95) & \
-                        (uv_n[:, 1].abs() < 0.95) & \
-                        (zj.squeeze(-1) > 1e-3)
-                if valid.sum() < 16:
-                    continue
-
-                grid = uv_n[valid].unsqueeze(0).unsqueeze(1)   # [1,1,M,2]
-
-                # depth in view j at projected locations
-                d_j_map = depth[j, ..., 0][None, None]         # [1,1,H,W]
-                d_j_at  = F.grid_sample(d_j_map, grid,
-                            align_corners=True, mode='bilinear',
-                            padding_mode='zeros').reshape(-1)
-
-                # colour in view j at projected locations
-                c_j_map = imgs[j][None]                        # [1,3,H,W]
-                c_j_at  = F.grid_sample(c_j_map, grid,
-                            align_corners=True, mode='bilinear',
-                            padding_mode='zeros').reshape(3, -1).T
-
-                # 1) depth consistency
-                z_proj     = zj[valid].squeeze(-1)
-                depth_loss = F.huber_loss(z_proj, d_j_at, delta=0.05)
-
-                # 2) photometric consistency
-                photo_loss = F.l1_loss(col_s[valid], c_j_at)
-
-                loss = loss + depth_loss + 0.1 * photo_loss
-                n_pairs += 1
-
-        if n_pairs > 0:
-            loss = loss / n_pairs
-
-        # regularisation – keep perturbations small
-        reg = 0.01 * (delta_aa.pow(2).sum() + delta_t.pow(2).sum()) \
-            + 0.005 * log_dc.pow(2).sum() / (S * H * W)
-        (loss + reg).backward()
-        optimizer.step()
-
-    # ── assemble refined outputs ──
-    with torch.no_grad():
-        dR    = axis_angle_to_rotation_matrix(delta_aa)
-        R_out = dR @ R_init
-        t_out = t_init + delta_t
-        refined_ext   = torch.cat([R_out, t_out.unsqueeze(-1)], dim=-1)
-        refined_depth = d_init * torch.exp(log_dc.clamp(-0.3, 0.3))
-    return refined_ext.to(extrinsic.dtype), refined_depth.to(depth_map.dtype)
-
-
 def mask_corners(img, frac=0.08):
     """Paint solid black squares in all four corners.
     Square side length = frac * image height."""
@@ -284,21 +114,6 @@ def mask_corners(img, frac=0.08):
     img[h - s:, :s] = 0      # bottom-left
     img[h - s:, w - s:] = 0  # bottom-right
     return img
-
-
-def density_filter(points, colors, radius=0.02, min_neighbors=5):
-    """Remove isolated/floating points using k-NN density estimation.
-    A point is kept only if its k-th nearest neighbor is within *radius*.
-    This is fast: O(N log N) build + O(N k log N) query via cKDTree.
-    """
-    if points.shape[0] < min_neighbors + 1:
-        return points, colors
-    tree = cKDTree(points)
-    # +1 because the query includes the point itself (distance 0)
-    dists, _ = tree.query(points, k=min_neighbors + 1)
-    # dists[:, -1] = distance to the (min_neighbors)-th nearest neighbour
-    mask = dists[:, -1] <= radius
-    return points[mask], colors[mask]
 
 def preprocess_frames(frames, target_size=518):
     # Frames are list of BGR numpy arrays
@@ -336,8 +151,6 @@ def main():
     parser.add_argument("--scale", type=int, default=8, help="Downscale frame for VGGT (unused currently)")
     parser.add_argument("--colmap_path", type=str, default="/home/anurag/stream_captures/sparse/0",
                         help="Path to COLMAP sparse model directory")
-    parser.add_argument("--ba_iters", type=int, default=30,
-                        help="Bundle-adjustment iterations per frame (0 = disable)")
     args = parser.parse_args()
 
     # Load Config
@@ -430,16 +243,8 @@ def main():
                     intrinsic = intrinsic.squeeze(0)
                 depth_map = predictions['depth'].squeeze(0) # [S, H, W, 1]
                 depth_conf = predictions['depth_conf'].squeeze(0) # [S, H, W]
-
-            # ── Bundle Adjustment ────────────────────────────────────
-            if args.ba_iters > 0:
-                ba_t = time.time()
-                extrinsic, depth_map = bundle_adjust(
-                    extrinsic, intrinsic, depth_map, input_tensor, depth_conf,
-                    n_iters=args.ba_iters, n_samples=4096, device=device)
-                print(f"  BA: {time.time() - ba_t:.3f}s")
-
-            # Unproject (with refined extrinsics & depth)
+            
+            # Unproject
             points = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic) 
             # points: [B, H, W, 3]
             
@@ -477,7 +282,7 @@ def main():
             # We filter based on intensity (mean of RGB). 
             # Threshold 0.1 roughly corresponds to dark grey.
             intensity = np.mean(colors_flat, axis=1)
-            valid_color_mask = intensity > 0.01
+            valid_color_mask = intensity > 0.1
             points_flat = points_flat[valid_color_mask]
             colors_flat = colors_flat[valid_color_mask]
             conf_flat = conf_flat[valid_color_mask]
@@ -488,17 +293,13 @@ def main():
             points_flat = points_flat[conf_mask]
             colors_flat = colors_flat[conf_mask]
 
-            # Density-based filtering: remove isolated / floating points
-            points_flat, colors_flat = density_filter(
-                points_flat, colors_flat, radius=0.01, min_neighbors=10)
-
             # Filter invalid points (depth > 0 or not infinite)
             # depth_map usually has 0 for invalid?
             # unproject handles it.
             
             # Sample for viz
             n_points = points_flat.shape[0]
-            target_n = 100000
+            target_n = 1000000
             if n_points > target_n:
                 mask = np.random.choice(n_points, target_n, replace=False)
                 p_vis = points_flat[mask]

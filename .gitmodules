@@ -1,0 +1,3 @@
+[submodule "VGGT-X"]
+	path = VGGT-X
+	url = https://github.com/Linketic/VGGT-X.git

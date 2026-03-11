@@ -212,15 +212,16 @@ def load_masks(mask_dir: str | Path, stems: list[str],
 #  ArUco marker detection & 3-D lookup
 # ═════════════════════════════════════════════════════════════════════════
 
-def detect_aruco_centers(frames: list[np.ndarray],
-                         aruco_dict_type: int = None,
-                         ) -> dict[int, list[tuple[int, np.ndarray]]]:
-    """Detect ArUco markers in every frame and return their pixel centers.
+def detect_aruco_with_corners(frames: list[np.ndarray],
+                              aruco_dict_type: int = None,
+                              ) -> dict[int, list[tuple[int, np.ndarray, np.ndarray]]]:
+    """Detect ArUco markers in every frame and return pixel centers + corners.
 
     Returns
     -------
-    marker_observations : dict  id -> list of (frame_idx, center_xy_px)
+    marker_observations : dict  id -> list of (frame_idx, center_xy_px, corners_4x2)
         center_xy_px is shape (2,) in original image pixel coordinates.
+        corners_4x2 has rows [top-left, top-right, bottom-right, bottom-left].
     """
     if aruco_dict_type is None:
         aruco_dict_type = ARUCO_DICT["DICT_5X5_100"]
@@ -228,7 +229,7 @@ def detect_aruco_centers(frames: list[np.ndarray],
     parameters = cv2.aruco.DetectorParameters()
     detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
-    marker_obs: dict[int, list[tuple[int, np.ndarray]]] = defaultdict(list)
+    marker_obs: dict[int, list[tuple[int, np.ndarray, np.ndarray]]] = defaultdict(list)
 
     for fi, frame in enumerate(frames):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -236,10 +237,10 @@ def detect_aruco_centers(frames: list[np.ndarray],
         if ids is None or len(corners) == 0:
             continue
         for i, marker_id in enumerate(ids.flatten()):
-            # corners[i] shape (1,4,2) — four corner pixels
+            # corners[i] shape (1,4,2) — four corner pixels [TL, TR, BR, BL]
             c = corners[i].reshape(4, 2)
             center = c.mean(axis=0)  # (x, y)
-            marker_obs[int(marker_id)].append((fi, center))
+            marker_obs[int(marker_id)].append((fi, center, c.copy()))
             print(f"  frame {fi}: ArUco ID {marker_id}  center px = "
                   f"({center[0]:.1f}, {center[1]:.1f})")
 
@@ -312,6 +313,119 @@ def aruco_3d_from_pointmap(
             print(f"  ArUco ID {mid}: no valid 3-D samples found")
 
     return avg_positions
+
+
+def _lookup_3d_at_pixel(px: np.ndarray, fi: int, points: np.ndarray,
+                        orig_h: int, orig_w: int,
+                        target_size: int = 518, patch_radius: int = 2
+                        ) -> np.ndarray | None:
+    """Look up a single pixel location in the VGGT point map and return 3-D."""
+    _, H, W, _ = points.shape
+    row, col = pixel_to_vggt_coords(px, orig_h, orig_w, target_size)
+    r_lo, r_hi = max(row - patch_radius, 0), min(row + patch_radius + 1, H)
+    c_lo, c_hi = max(col - patch_radius, 0), min(col + patch_radius + 1, W)
+    patch = points[fi, r_lo:r_hi, c_lo:c_hi].reshape(-1, 3)
+    valid = np.isfinite(patch).all(axis=1) & (np.linalg.norm(patch, axis=1) > 1e-6)
+    if valid.any():
+        return patch[valid].mean(axis=0)
+    return None
+
+
+def aruco_3d_poses_from_pointmap(
+    marker_obs: dict[int, list[tuple[int, np.ndarray, np.ndarray]]],
+    points: np.ndarray,            # [S, H, W, 3]
+    orig_sizes: list[tuple[int, int]],
+    target_size: int = 518,
+    patch_radius: int = 2,
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Compute 3-D center + orientation for each ArUco marker.
+
+    Uses all 4 corner pixels mapped to 3-D to derive a local frame:
+      X-axis → right   (TL→TR direction)
+      Y-axis → down    (TL→BL direction)
+      Z-axis → normal  (cross X,Y — pointing out of the marker)
+
+    Parameters
+    ----------
+    marker_obs : output of detect_aruco_with_corners
+    points     : VGGT point map [S, H, W, 3]
+    orig_sizes : (h, w) per frame
+
+    Returns
+    -------
+    poses : dict  marker_id -> (center_3d (3,), rotation_3x3 (3,3))
+        rotation columns are [X, Y, Z] axes of the marker.
+    """
+    poses: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+    for mid, obs_list in marker_obs.items():
+        all_centers = []
+        all_rotations = []
+
+        for fi, center_px, corners_px in obs_list:
+            orig_h, orig_w = orig_sizes[fi]
+
+            # Look up center in 3-D
+            center_3d = _lookup_3d_at_pixel(
+                center_px, fi, points, orig_h, orig_w, target_size, patch_radius)
+            if center_3d is None:
+                continue
+
+            # Look up all 4 corners in 3-D  (TL, TR, BR, BL)
+            corners_3d = []
+            for ci in range(4):
+                c3d = _lookup_3d_at_pixel(
+                    corners_px[ci], fi, points, orig_h, orig_w,
+                    target_size, patch_radius)
+                if c3d is not None:
+                    corners_3d.append(c3d)
+                else:
+                    break
+
+            all_centers.append(center_3d)
+
+            if len(corners_3d) == 4:
+                tl, tr, br, bl = [np.asarray(c) for c in corners_3d]
+                # X axis: right  (midpoint of right edge − midpoint of left edge)
+                x_axis = ((tr + br) / 2.0) - ((tl + bl) / 2.0)
+                # Y axis: down  (midpoint of bottom edge − midpoint of top edge)
+                y_axis = ((bl + br) / 2.0) - ((tl + tr) / 2.0)
+                # Z axis: outward normal
+                z_axis = np.cross(x_axis, y_axis)
+
+                xn = np.linalg.norm(x_axis)
+                yn = np.linalg.norm(y_axis)
+                zn = np.linalg.norm(z_axis)
+
+                if xn > 1e-8 and yn > 1e-8 and zn > 1e-8:
+                    x_axis /= xn
+                    z_axis /= zn
+                    # Re-orthogonalise Y from Z×X
+                    y_axis = np.cross(z_axis, x_axis)
+                    y_axis /= np.linalg.norm(y_axis)
+                    rot = np.column_stack([x_axis, y_axis, z_axis])  # 3×3
+                    all_rotations.append(rot)
+
+        if all_centers:
+            avg_center = np.stack(all_centers).mean(axis=0)
+            if all_rotations:
+                # Average rotations via mean + SVD re-projection to SO(3)
+                avg_rot = np.stack(all_rotations).mean(axis=0)
+                U, _, Vt = np.linalg.svd(avg_rot)
+                avg_rot = U @ Vt
+                if np.linalg.det(avg_rot) < 0:       # fix reflection
+                    U[:, -1] *= -1
+                    avg_rot = U @ Vt
+            else:
+                avg_rot = np.eye(3)
+
+            poses[mid] = (avg_center, avg_rot)
+            print(f"  ArUco ID {mid}: center={avg_center}  "
+                  f"orientation={'YES' if all_rotations else 'identity (no corners)'}")
+        else:
+            print(f"  ArUco ID {mid}: no valid 3-D samples found")
+
+    return poses
 
 
 def load_vggt(device: str, dtype: torch.dtype, chunk_size: int = 512) -> VGGT:
@@ -530,7 +644,7 @@ def main():
         print(f"Subsampled to {args.max_points:,}")
 
     # ── 6. ArUco marker detection & 3-D localization ────────────────────
-    aruco_positions = {}
+    aruco_poses = {}   # marker_id -> (center_3d, rotation_3x3)
     if not args.no_aruco:
         aruco_dict_type = ARUCO_DICT.get(args.aruco_type)
         if aruco_dict_type is None:
@@ -538,17 +652,17 @@ def main():
                   f"skipping marker detection.")
         else:
             print(f"\nDetecting ArUco markers ({args.aruco_type}) …")
-            marker_obs = detect_aruco_centers(frames, aruco_dict_type)
+            marker_obs = detect_aruco_with_corners(frames, aruco_dict_type)
             print(f"Found {len(marker_obs)} unique marker IDs across all views")
 
             if marker_obs:
-                print("Looking up 3-D positions from VGGT point map …")
-                aruco_positions = aruco_3d_from_pointmap(
+                print("Looking up 3-D positions + orientations from VGGT point map …")
+                aruco_poses = aruco_3d_poses_from_pointmap(
                     marker_obs, points, orig_sizes,
                     target_size=args.target_size,
                     patch_radius=2,
                 )
-                print(f"Resolved {len(aruco_positions)} marker 3-D positions")
+                print(f"Resolved {len(aruco_poses)} marker 3-D poses")
 
     # ── 7. Viser viewer ────────────────────────────────────────────────
     server = viser.ViserServer(port=args.port)
@@ -581,7 +695,7 @@ def main():
             color=(80, 180, 255),
         )
 
-    # ── 7b. Add ArUco marker spheres + labels ──────────────────────────
+    # ── 7b. Add ArUco marker axes + labels ─────────────────────────────
     MARKER_COLORS = [
         (255,  50,  50),   # red
         ( 50, 255,  50),   # green
@@ -593,25 +707,40 @@ def main():
         (128,   0, 255),   # purple
     ]
 
-    for idx, (mid, pos) in enumerate(sorted(aruco_positions.items())):
+    axis_length = args.marker_size * 2.0   # length of each RGB axis line
+
+    for idx, (mid, (pos, rot)) in enumerate(sorted(aruco_poses.items())):
         color = MARKER_COLORS[idx % len(MARKER_COLORS)]
-        # Icosphere mesh as a visible marker
+
+        # ── RGB coordinate frame (orientation) ──────────────────────────
+        # rot columns: [X, Y, Z]  →  draw as Red, Green, Blue lines
+        wxyz = vtf.SO3.from_matrix(rot).wxyz
+        server.scene.add_frame(
+            f"/markers/id_{mid}/axes",
+            wxyz=wxyz,
+            position=pos,
+            axes_length=axis_length,
+            axes_radius=axis_length * 0.06,
+        )
+
+        # Small sphere at center for visibility
         server.scene.add_icosphere(
             f"/markers/id_{mid}/sphere",
-            radius=args.marker_size,
+            radius=args.marker_size * 0.3,
             color=color,
             position=pos,
         )
-        # Text label floating slightly above the sphere
+
+        # Text label floating above
         server.scene.add_label(
             f"/markers/id_{mid}/label",
             text=f"ID {mid}",
             position=pos + np.array([0.0, 0.0, args.marker_size * 2.5]),
         )
-        print(f"  Marker ID {mid}  →  ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})  "
-              f"color={color}")
+        print(f"  Marker ID {mid}  →  center=({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})  "
+              f"axes_len={axis_length:.3f}  color={color}")
 
-    n_markers = len(aruco_positions)
+    n_markers = len(aruco_poses)
     print(f"\nDisplaying {points_flat.shape[0]:,} points from {n_images} images"
           f" + {n_markers} ArUco marker(s).")
     print("Press Ctrl+C to exit.\n")

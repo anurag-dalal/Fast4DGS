@@ -206,3 +206,14 @@ make -j$(nproc)
 sudo make install
 sudo ldconfig
 ```
+
+## ROS
+```
+source /opt/ros/humble/setup.bash
+python main.py
+```
+In other terminal
+```
+rviz2
+```
+And add the pointcloud

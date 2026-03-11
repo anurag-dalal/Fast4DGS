@@ -1,0 +1,24 @@
+{
+    "remove_corners": {
+        "enabled": true,
+        "corner_threshold": 0.02
+    },
+    "working_area_based": {
+        "enabled": true,
+        "radius_from_center": 1.8
+    },
+    "confidence_based_filtering": {
+        "enabled": true,
+        "confidence_threshold": 0.5
+    },
+    "delete_points_by_confience_by_percentage": {
+        "enabled": false,
+        "percentage_to_delete": 0.988
+    },
+    "outlier_removal": {
+        "enabled": true,
+        "num_neighbors": 10,
+        "distance_threshold": 0.01
+    },
+    "final_target_num_points": 500000
+}

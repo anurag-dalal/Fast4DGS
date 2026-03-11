@@ -15,15 +15,34 @@ from torchvision import transforms as TF
 
 from dataset.read_write_model import read_model
 
+# ── Camera calibration (from dewarper config) ────────────────────────────
+# projection-type=3  (rational model, 8 distortion coeffs)
+CALIB_FX = 1042.00
+CALIB_FY = 1042.00
+CALIB_CX = 950.6477088
+CALIB_CY = 557.5285168
+CALIB_DIST = np.array([
+    -0.0516463965,    # k1
+    -0.04747710885,   # k2
+    -0.0001566917679, # p1
+     0.0002697267978, # p2
+     0.01013947186,   # k3
+     0.3133340326,    # k4
+    -0.1464375728,    # k5
+     0.02119491113,   # k6
+], dtype=np.float64)
+CALIB_W = 1920
+CALIB_H = 1080
 
 
 class StreamCapture:
     """Grabs frames from one GStreamer UDP/RTP H264 stream in a background thread."""
-    def __init__(self, port: int, node_name: str, host: str, mac: str):
+    def __init__(self, port: int, node_name: str, host: str, mac: str, cam_name: str):
         self.port = port
         self.node_name = node_name
         self.host = host
         self.mac = mac
+        self.cam_name = cam_name
         self.frame = None
         self._lock = threading.Lock()
         self._running = False
@@ -97,6 +116,7 @@ class LiveStreamDataset:
         print(f"Loading COLMAP model from {self.colmap_path}...")
         colmap_cameras, colmap_images, _ = read_model(self.colmap_path, ext='.bin')
         name_to_image = {img.name: img for img in colmap_images.values()}
+        self.build_undistort_maps()
         self._setup_captures()
         
 
@@ -128,14 +148,33 @@ class LiveStreamDataset:
             
         return torch.stack(images)
     
+    def build_undistort_maps(self, w: int = CALIB_W, h: int = CALIB_H):
+        """Pre-compute undistortion remap tables (computed once, reused for all frames)."""
+        K = np.array([
+            [CALIB_FX, 0,        CALIB_CX],
+            [0,        CALIB_FY, CALIB_CY],
+            [0,        0,        1       ],
+        ], dtype=np.float64)
+        # newCameraMatrix = K  (keep same principal point / focal length)
+        self.undistort_map1, self.undistort_map2 = cv2.initUndistortRectifyMap(
+            K, CALIB_DIST, None, K, (w, h), cv2.CV_32FC1)
+        
+
+
+    def undistort_image(self, img: np.ndarray, map1, map2,
+                        interpolation=cv2.INTER_LINEAR) -> np.ndarray:
+        """Remap an image (or mask) using pre-computed undistortion maps."""
+        return cv2.remap(img, map1, map2, interpolation,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     def _setup_captures(self):
         nodes = self.config.get("nodes", [])
         for node in nodes:
             name = node.get("name", "")
             host = node.get("host", "")
             mac = node.get("MAC", "")
-            for port in node.get("ports", []):
-                self.captures.append(StreamCapture(port, name, host, mac))
+            cam_names = node.get("names", [])
+            for port, cam_name in zip(node.get("ports", []), cam_names):
+                self.captures.append(StreamCapture(port, name, host, mac, cam_name))
         for c in self.captures:
             c.start()
     def get_processed_frames(self, target_size=518):
@@ -144,7 +183,7 @@ class LiveStreamDataset:
             while True:
                 # Collect frames
                 frames = []
-                
+                cam_names = []
                 # We want frames from all active streams
                 # If some take too long, we might default to previous or black?
                 # For now, just take what is available
@@ -152,7 +191,9 @@ class LiveStreamDataset:
                 for c in self.captures:
                     f = c.read()
                     if f is not None:
+                        f = self.undistort_image(f, self.undistort_map1, self.undistort_map2)
                         frames.append(f)
+                        cam_names.append(c.cam_name)
                         active_frames += 1
                     else:
                         # Provide dummy frame or skip? 
@@ -169,7 +210,7 @@ class LiveStreamDataset:
                 # Preprocess
                 start_t = time.time()
                 input_tensor = self.preprocess_frames(frames, target_size=518).to(self.device, self.dtype)
-                return input_tensor
+                return input_tensor, cam_names
                 
         except KeyboardInterrupt:
             pass

@@ -8,24 +8,28 @@
             "name": "nodeone",
             "host": "10.0.0.1",
             "ports": [5000, 5001, 5002, 5003, 5004, 5005],
+            "names": ["cam0", "cam1", "cam2", "cam3", "cam4", "cam5"],
             "MAC": "48:b0:2d:ec:69:32"
         },
         {
             "name": "nodetwo",
             "host": "10.0.0.2",
             "ports": [6000, 6001, 6002, 6003, 6004, 6005],
+            "names": ["cam6", "cam7", "cam8", "cam9", "cam10", "cam11"],
             "MAC": "3c:6d:66:02:42:22"
         },
         {
             "name": "nodethree",
             "host": "10.0.0.3",
             "ports": [7000, 7001, 7002, 7003, 7004, 7005],
+            "names": ["cam12", "cam13", "cam14", "cam15", "cam16", "cam17"],
             "MAC": "48:b0:2d:ec:6b:62"
         },
         {
             "name": "nodefour",
             "host": "10.0.0.4",
             "ports": [8000, 8001, 8002, 8003, 8004, 8005],
+            "names": ["cam18", "cam19", "cam20", "cam21", "cam22", "cam23"],
             "MAC": "48:b0:2d:ec:78:46"
         }
     ]

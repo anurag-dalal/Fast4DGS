@@ -84,16 +84,6 @@ Fast4DGS/
 
 ## Quick Start
 
-### 1. Wake up camera nodes
-
-```bash
-sudo apt install wakeonlan
-wakeonlan -i 10.0.0.255 48:b0:2d:ec:69:32   # nodeone
-wakeonlan -i 10.0.0.255 3c:6d:66:02:42:22   # nodetwo
-wakeonlan -i 10.0.0.255 48:b0:2d:ec:6b:62   # nodethree
-wakeonlan -i 10.0.0.255 48:b0:2d:ec:78:46   # nodefour
-```
-
 ### 2. Run with Viser (browser viewer)
 
 ```bash

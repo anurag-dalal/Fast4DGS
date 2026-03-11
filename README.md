@@ -153,3 +153,56 @@ or
     --database_path /home/anurag/stream_captures/database.db \
     --image_path /home/anurag/stream_captures/images \
     --output_path /home/anurag/stream_captures/sparse
+
+## Install opencv from source
+
+```
+sudo apt update && sudo apt install -y build-essential cmake git pkg-config \
+libjpeg-dev libpng-dev libtiff-dev libavcodec-dev libavformat-dev libswscale-dev \
+libv4l-dev libxvidcore-dev libx264-dev libgtk-3-dev libatlas-base-dev gfortran 
+
+mkdir opencv_build && cd opencv_build
+
+# Clone repositories
+git clone https://github.com/opencv/opencv.git
+git clone https://github.com/opencv/opencv_contrib.git
+
+# (Optional) Switch to a specific stable version (e.g., 4.x)
+cd opencv && git checkout 4.x && cd ..
+cd opencv_contrib && git checkout 4.x && cd ..
+
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+
+cd opencv
+mkdir build && cd build
+
+cmake -D CMAKE_BUILD_TYPE=RELEASE \
+      -D CMAKE_INSTALL_PREFIX=/usr/local \
+      -D CMAKE_C_COMPILER=/usr/bin/gcc-11 \
+      -D CMAKE_CXX_COMPILER=/usr/bin/g++-11 \
+      -D CUDA_HOST_COMPILER=/usr/bin/gcc-11 \
+      -D WITH_CUDA=ON \
+      -D WITH_CUDNN=ON \
+      -D OPENCV_DNN_CUDA=ON \
+      -D CUDNN_INCLUDE_DIR=/usr/include/x86_64-linux-gnu \
+      -D CUDNN_LIBRARY=/usr/lib/x86_64-linux-gnu/libcudnn.so \
+      -D OPENCV_CUDA_FORCE_LIB_STATIC=ON \
+      -D CUDA_NVCC_FLAGS="--allow-unsupported-compiler" \
+      -D ENABLE_FAST_MATH=ON \
+      -D CUDA_ARCH_BIN=8.9 \
+      -D WITH_GSTREAMER=ON \
+      -D WITH_TBB=OFF \
+      -D WITH_V4L=ON \
+      -D WITH_QT=OFF \
+      -D OPENCV_ENABLE_NONFREE=ON \
+      -D OPENCV_EXTRA_MODULES_PATH=../../opencv_contrib/modules \
+      -D PYTHON3_EXECUTABLE=$(which python) \
+      -D PYTHON3_INCLUDE_DIR=$CONDA_PREFIX/include/python3.10 \
+      -D PYTHON3_LIBRARY=$CONDA_PREFIX/lib/libpython3.10.so \
+      -D PYTHON3_PACKAGES_PATH=$CONDA_PREFIX/lib/python3.10/site-packages \
+      ..
+make -j$(nproc)
+# Install
+sudo make install
+sudo ldconfig
+```

@@ -176,21 +176,21 @@ Point cloud post-processing filters:
          │
          ▼
 ┌─────────────────────┐
-│  LiveStreamDataset   │  Capture → BGR → RGB → pad → resize 518×518
+│  LiveStreamDataset  │  Capture → BGR → RGB → pad → resize 518×518
 └─────────┬───────────┘
           │  [24, 3, 518, 518] tensor
           ▼
 ┌─────────────────────┐
-│   VGGT-1B Inference  │  → intrinsics, extrinsics, depth, confidence
+│  VGGT-1B Inference  │  → intrinsics, extrinsics, depth, confidence
 └─────────┬───────────┘
           │  [24, 518, 518, 3] point map
           ▼
 ┌─────────────────────┐
-│  ArUco Detection     │  Detect markers → look up 3D corners → compute 6-DoF pose
+│ ArUco Detection     │  Detect markers → look up 3D corners → compute 6-DoF pose
 └─────────┬───────────┘
           ▼
 ┌─────────────────────┐
-│  PostProcessing      │  Corner mask → radius → confidence → outlier removal
+│  PostProcessing     │  Corner mask → radius → confidence → outlier removal
 └─────────┬───────────┘
           │  [N, 3] filtered points + colours
           ▼

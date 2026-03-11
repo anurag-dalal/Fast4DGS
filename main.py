@@ -67,10 +67,10 @@ def main():
                         help="ArUco dictionary type (e.g. DICT_5X5_100)")
     parser.add_argument("--marker_size", type=float, default=0.05,
                         help="Sphere size for ArUco markers in viewer")
-    parser.add_argument("--no_aruco", action="store_true", default=False,
-                        help="Skip ArUco marker detection")
-    parser.add_argument("--ros", action="store_false", default=True,
+    parser.add_argument("--aruco", action="store_true", default=True,
                         help="Enable ArUco marker detection")
+    parser.add_argument("--ros", action="store_true", default=False,
+                        help="Enable ROS point cloud publishing")
     args = parser.parse_args()
 
     dtype = (torch.bfloat16

@@ -1,3 +1,6 @@
 [submodule "VGGT-X"]
 	path = VGGT-X
 	url = https://github.com/Linketic/VGGT-X.git
+[submodule "ArUCo-Markers-Pose-Estimation-Generation-Python"]
+	path = ArUCo-Markers-Pose-Estimation-Generation-Python
+	url = https://github.com/GSNCodes/ArUCo-Markers-Pose-Estimation-Generation-Python.git

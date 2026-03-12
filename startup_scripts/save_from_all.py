@@ -26,7 +26,7 @@ DEVICES: List[Device] = [
 
 
 REMOTE_CAPTURE_DIR = "/tmp/stream_captures"
-LOCAL_CAPTURE_DIR = os.path.expanduser("~/stream_captures")
+LOCAL_CAPTURE_DIR = os.path.expanduser("~/green_ball_front")
 VIDEO_IDXS = list(range(6))
 
 

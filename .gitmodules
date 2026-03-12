@@ -4,3 +4,6 @@
 [submodule "ArUCo-Markers-Pose-Estimation-Generation-Python"]
 	path = ArUCo-Markers-Pose-Estimation-Generation-Python
 	url = https://github.com/GSNCodes/ArUCo-Markers-Pose-Estimation-Generation-Python.git
+[submodule "gsplat"]
+	path = gsplat
+	url = https://github.com/nerfstudio-project/gsplat.git

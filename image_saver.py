@@ -98,6 +98,11 @@ class StreamSaverApp:
         self.mac_label = tk.Label(frm, text="—", anchor="w", font=val_font)
         self.mac_label.grid(row=1, column=3, sticky="w", pady=(4, 0))
 
+        # Camera name (readonly)
+        tk.Label(frm, text="Camera:", font=lbl_font).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.cam_label = tk.Label(frm, text="—", anchor="w", font=val_font)
+        self.cam_label.grid(row=2, column=1, sticky="w", pady=(4, 0))
+
         # ── button bar ──
         btn_frm = tk.Frame(self.root, padx=12, pady=6)
         btn_frm.pack(fill="x")
@@ -148,6 +153,7 @@ class StreamSaverApp:
                     "name": n.get("name", ""),
                     "host": n.get("host", ""),
                     "ports": n.get("ports", []),
+                    "names": n.get("names", []),
                     "MAC": n.get("MAC", n.get("mac", "")),
                 })
             return normalized
@@ -163,15 +169,26 @@ class StreamSaverApp:
         # update host/mac
         self.host_label.config(text=node.get("host", ""))
         self.mac_label.config(text=node.get("MAC", ""))
-        # update ports dropdown
-        ports = [str(p) for p in node.get("ports", [])]
+        # update ports dropdown with camera names
+        ports = node.get("ports", [])
+        names = node.get("names", [])
+        self._port_to_name = {}
         if ports:
             menu = self.ports_menu["menu"]
             menu.delete(0, "end")
-            for p in ports:
-                menu.add_command(label=p, command=lambda v=p: self.port_var.set(v))
+            for i, p in enumerate(ports):
+                cam_name = names[i] if i < len(names) else ""
+                label = f"{p}  ({cam_name})" if cam_name else str(p)
+                self._port_to_name[str(p)] = cam_name
+                menu.add_command(label=label, command=lambda v=str(p): self._select_port(v))
             # set default port
-            self.port_var.set(ports[0])
+            self._select_port(str(ports[0]))
+
+    def _select_port(self, port_str):
+        """Set the port variable and update the camera name label."""
+        self.port_var.set(port_str)
+        cam_name = getattr(self, "_port_to_name", {}).get(port_str, "")
+        self.cam_label.config(text=cam_name if cam_name else "—")
 
     def start_stream(self):
         # if a stream is already running, stop it first so we can switch

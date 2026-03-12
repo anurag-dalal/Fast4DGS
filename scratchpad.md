@@ -225,3 +225,51 @@ python main.py --viser
 ```
 Then in browser go to localhost:8000
 ![Viser](images/viser.png)
+
+## gsplat
+pip install git+https://github.com/nerfstudio-project/gsplat.git --no-build-isolation
+
+
+create a gui/cli with help from:
+    image_saver.py
+    view_all_streams.py
+    main.py
+
+
+I want a tabbed UI
+Tabs:
+    Config (3 subtabs, 1st tab)
+        Stream Config: path, can view edit configs and save stream_config.json 
+        Point-cloud Post-procesing: path of json, can view and edit pp_pointcloud.json
+        other option: publish ros pointcloud -> if enabled will publish ros pointclod see main.py
+                      publish aruco markers -> will publish position and orientation of the aruco markers (need to edit ros_utils.py)
+                      publish target position -> if this is enabled will publish the initial target position (will approximate the mask from the streams where it is visible and backproject to find a bound box and publish it as ros using vggt depth from the stream)
+                      track_target -> for later
+
+        Buttons:
+            Save and start
+
+    Select Target (tabs in order, only when 1st is done 2nd will be neabled) (update sam_utils.py) [they wont show continious streams when selecting target but a snapshot]
+        1st tab:
+            Can choose streams similar to view individual streams, and then select a bound box similar to prompt_box in sam_utilis.py
+            will run sam and found the masks similar to sam_utilis.py
+        2nd tab:
+            will show the mask overlayed on the images of all the streams
+
+        Button: can save the maks to memory, or reseect the mask
+
+    
+    View streams (2 sub tabs)
+        view all streams: will show all streams similar to view_all_streams.py
+        view individual streams: can select and visualize individual streams, similar to image_saver.py
+
+    
+
+    View point cloud 
+        some options in this tab:
+            enable/disable aruco marker:
+            show target bound box:
+            show camera position:
+        view point cloud: will show the point cloud with aruco markers, similar to main.py (maybe use open3d)
+    
+

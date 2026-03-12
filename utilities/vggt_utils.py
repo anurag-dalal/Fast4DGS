@@ -18,7 +18,8 @@ class VGGTUtils:
         self.dtype = dtype
         self.chunk_size = chunk_size
         self.colmap_path = colmap_path
-        self.model = self.load_vggt()
+        self.model = None
+        self.load_vggt()
     
     def load_vggt(self):
         """Load the VGGT-1B model."""

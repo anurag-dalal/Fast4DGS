@@ -235,7 +235,7 @@ create a gui/cli with help from:
     view_all_streams.py
     main.py
 
-
+    
 I want a tabbed UI
 Tabs:
     Config (3 subtabs, 1st tab)
@@ -265,11 +265,37 @@ Tabs:
 
     
 
-    View point cloud 
-        some options in this tab:
+    View point cloud: will have 2 buttons and show status if viser is running 
+        open viser: (will open viser)
+        stop viser: 
+
+        some options in the viser:
             enable/disable aruco marker:
             show target bound box:
             show camera position:
-        view point cloud: will show the point cloud with aruco markers, similar to main.py (maybe use open3d)
-    
+        view point cloud: will show the point cloud with aruco markers, similar to main.py
 
+    
+functions:
+    at first only config tab will be active only when save and start will be pressed the dataset will start
+    skip the first 10 seconds of stream (by getting the frames similar to fast4dgs_app.py)
+
+    then in the next tab we can select target
+        here we will only have the latest snapshot
+        will select from one of the images a bounding box
+        get the mask when run sam is clicked
+        unload the sam, delete and clear cache related to sam
+
+    view streams will just show all streams or selectable individual streams
+
+    Then in view point cloud here we will load the vggt
+    get the pointcloud similar in main.py
+    also infer a 3d bounding box based on the mask appropiately (1 time only)
+    and display everything in viser
+    i can start or stop the viser from here
+
+
+edit files in utilities folder
+edit fast4dgs_app.py
+dont edit main.py
+create new file for the gui app

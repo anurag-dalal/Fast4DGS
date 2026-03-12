@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-import sys
-import os
-import time
-import json
 import threading
-import argparse
-from pathlib import Path
+import time
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -35,6 +31,17 @@ CALIB_W = 1920
 CALIB_H = 1080
 
 
+@dataclass(slots=True)
+class StreamFrameBatch:
+    processed_tensor: torch.Tensor | None
+    cam_names: list[str]
+    display_names: list[str]
+    raw_frames: dict[str, np.ndarray]
+    undistorted_frames: dict[str, np.ndarray]
+    processed_frames: dict[str, np.ndarray]
+    processed_index_by_display_name: dict[str, int]
+
+
 class StreamCapture:
     """Grabs frames from one GStreamer UDP/RTP H264 stream in a background thread."""
     def __init__(self, port: int, node_name: str, host: str, mac: str, cam_name: str):
@@ -48,6 +55,11 @@ class StreamCapture:
         self._running = False
         self._cap = None
         self._thread = None
+
+    @property
+    def display_name(self) -> str:
+        suffix = f" ({self.cam_name})" if self.cam_name else ""
+        return f"{self.node_name}:{self.port}{suffix}"
 
     def start(self, timeout: float = 15.0, retry_interval: float = 3.0):
         self._running = True
@@ -96,7 +108,9 @@ class StreamCapture:
 
     def read(self):
         with self._lock:
-            return self.frame
+            if self.frame is None:
+                return None
+            return self.frame.copy()
 
     def stop(self):
         self._running = False
@@ -118,32 +132,34 @@ class LiveStreamDataset:
         name_to_image = {img.name: img for img in colmap_images.values()}
         self.build_undistort_maps()
         self._setup_captures()
-        
+    
+    def _preprocess_single_frame(self, frame, target_size=518):
+        to_tensor = TF.ToTensor()
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+
+        width, height = img.size
+        max_dim = max(width, height)
+        left = (max_dim - width) // 2
+        top = (max_dim - height) // 2
+
+        square_img = Image.new("RGB", (max_dim, max_dim), (0, 0, 0))
+        square_img.paste(img, (left, top))
+        square_img = square_img.resize((target_size, target_size), Image.Resampling.BICUBIC)
+
+        processed_rgb = np.array(square_img)
+        processed_bgr = cv2.cvtColor(processed_rgb, cv2.COLOR_RGB2BGR)
+        img_tensor = to_tensor(square_img)
+        return processed_bgr, img_tensor
 
     def preprocess_frames(self, frames, target_size=518):
         # Frames are list of BGR numpy arrays
         # Return: tensor [B, 3, H, W]
         images = []
-        to_tensor = TF.ToTensor()
         
         for frame in frames:
-            # Black out corners so intensity filter removes them from point cloud
-            # BGR to RGB
-            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(img)
-            
-            width, height = img.size
-            max_dim = max(width, height)
-            
-            left = (max_dim - width) // 2
-            top = (max_dim - height) // 2
-            
-            square_img = Image.new("RGB", (max_dim, max_dim), (0, 0, 0))
-            square_img.paste(img, (left, top))
-            
-            square_img = square_img.resize((target_size, target_size), Image.Resampling.BICUBIC)
-            
-            img_tensor = to_tensor(square_img)
+            _, img_tensor = self._preprocess_single_frame(frame, target_size=target_size)
             images.append(img_tensor)
             
         return torch.stack(images)
@@ -177,40 +193,53 @@ class LiveStreamDataset:
                 self.captures.append(StreamCapture(port, name, host, mac, cam_name))
         for c in self.captures:
             c.start()
-    def get_processed_frames(self, target_size=518):
-        count = 0
+
+    def get_stream_batch(self, target_size=518, min_frames=2, wait=True):
         try:
             while True:
-                # Collect frames
-                frames = []
+                raw_frames = {}
+                undistorted_frames = {}
+                processed_frames = {}
+                tensors = []
                 cam_names = []
-                # We want frames from all active streams
-                # If some take too long, we might default to previous or black?
-                # For now, just take what is available
-                active_frames = 0
+                display_names = []
+
                 for c in self.captures:
                     f = c.read()
                     if f is not None:
-                        f = self.undistort_image(f, self.undistort_map1, self.undistort_map2)
-                        frames.append(f)
+                        raw_frames[c.display_name] = f
+                        undistorted = self.undistort_image(f, self.undistort_map1, self.undistort_map2)
+                        undistorted_frames[c.display_name] = undistorted
+                        processed_bgr, img_tensor = self._preprocess_single_frame(undistorted, target_size=target_size)
+                        processed_frames[c.display_name] = processed_bgr
+                        tensors.append(img_tensor)
                         cam_names.append(c.cam_name)
-                        active_frames += 1
-                    else:
-                        # Provide dummy frame or skip? 
-                        # VGGT might need consistent count if we wanted consistent poses?
-                        # For now skip.
-                        pass
-                
-                if active_frames < 2:
-                    # Need at least 2 frames for meaningful structure usually?
-                    # Or just wait until we have something.
+                        display_names.append(c.display_name)
+
+                if len(display_names) < min_frames:
+                    if not wait:
+                        return StreamFrameBatch(
+                            processed_tensor=None,
+                            cam_names=cam_names,
+                            display_names=display_names,
+                            raw_frames=raw_frames,
+                            undistorted_frames=undistorted_frames,
+                            processed_frames=processed_frames,
+                            processed_index_by_display_name={name: index for index, name in enumerate(display_names)},
+                        )
                     time.sleep(0.1)
                     continue
-                    
-                # Preprocess
-                start_t = time.time()
-                input_tensor = self.preprocess_frames(frames, target_size=518).to(self.device, self.dtype)
-                return input_tensor, cam_names
+
+                input_tensor = torch.stack(tensors).to(self.device, self.dtype)
+                return StreamFrameBatch(
+                    processed_tensor=input_tensor,
+                    cam_names=cam_names,
+                    display_names=display_names,
+                    raw_frames=raw_frames,
+                    undistorted_frames=undistorted_frames,
+                    processed_frames=processed_frames,
+                    processed_index_by_display_name={name: index for index, name in enumerate(display_names)},
+                )
                 
         except KeyboardInterrupt:
             pass
@@ -218,6 +247,46 @@ class LiveStreamDataset:
             print(f"Error: {e}")
             import traceback
             traceback.print_exc()
+
+    def get_processed_frames(self, target_size=518):
+        batch = self.get_stream_batch(target_size=target_size, min_frames=2, wait=True)
+        return batch.processed_tensor, batch.cam_names
+
+    def get_unprocessed_frames(self, min_frames=1, wait=False):
+        batch = self.get_stream_batch(target_size=518, min_frames=min_frames, wait=wait)
+        return batch.raw_frames, batch.display_names
+
+    def map_raw_box_to_processed(self, raw_frame: np.ndarray, raw_box, target_size=518):
+        x1, y1, x2, y2 = [int(v) for v in raw_box]
+        h, w = raw_frame.shape[:2]
+        x1 = max(0, min(x1, w - 1))
+        x2 = max(0, min(x2, w))
+        y1 = max(0, min(y1, h - 1))
+        y2 = max(0, min(y2, h))
+
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[y1:y2, x1:x2] = 255
+        undistorted_mask = self.undistort_image(mask, self.undistort_map1, self.undistort_map2, interpolation=cv2.INTER_NEAREST)
+        ys, xs = np.where(undistorted_mask > 0)
+
+        if len(xs) == 0 or len(ys) == 0:
+            und_x1, und_y1, und_x2, und_y2 = x1, y1, x2, y2
+        else:
+            und_x1 = int(xs.min())
+            und_y1 = int(ys.min())
+            und_x2 = int(xs.max()) + 1
+            und_y2 = int(ys.max()) + 1
+
+        max_dim = max(w, h)
+        left = (max_dim - w) // 2
+        top = (max_dim - h) // 2
+        scale = target_size / max_dim
+        return (
+            int(round((und_x1 + left) * scale)),
+            int(round((und_y1 + top) * scale)),
+            int(round((und_x2 + left) * scale)),
+            int(round((und_y2 + top) * scale)),
+        )
                 
     def stop(self):            
         print("Stopping streams...")

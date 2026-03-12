@@ -326,6 +326,18 @@ sudo make install && sudo ldconfig
 ```
 
 ---
+## GUI
+```
+python fast4dgs_gui.py
+```
+* In gui first configure the streams and what to publish in ROS.
+* Click 'Save and Start'
+* The in target Select select one of the cameras, draw a boud box for the target and click 'Run SAM'
+* Go back to 'Select Snapshot' Sub-Tab and click 'Save Mask to Memory'
+* Go to 'View Point Cloud' tab
+* Click 'OPEN viser'
+* This will start the viser and publish ROS topics.
+
 
 ## License
 

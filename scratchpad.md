@@ -299,3 +299,7 @@ edit files in utilities folder
 edit fast4dgs_app.py
 dont edit main.py
 create new file for the gui app
+
+need to delete the black bars in vggt pre processing
+and use them as the inputs to gaussian
+

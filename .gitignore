@@ -35,3 +35,4 @@ logs/
 remote_shutdown.sh
 remote_reboot.sh
 /startup_scripts/push_all_streamer.sh
+/results/
